@@ -1,0 +1,8 @@
+# Large generated files
+portfolio_simulation.csv
+
+
+# Python
+__pycache__/
+*.pyc
+.env
