@@ -1,7 +1,6 @@
 import pandas as pd
 import os
 
-# ================= CONFIG =================
 INITIAL_CASH = 200000
 BUY_QTY = 10
 START_DATE = "2021-01-25"
