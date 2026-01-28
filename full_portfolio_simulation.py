@@ -1,61 +1,112 @@
 import pandas as pd
-import glob
+import os
 
-# Parameters
-start_date = '2021-01-25'
-end_date = '2026-01-25'
-initial_cash = 200000
+# ================= CONFIG =================
+INITIAL_CASH = 200000
+BUY_QTY = 10
+START_DATE = "2021-01-25"
+END_DATE = "2026-01-25"
 
-# Get all stock CSV files
-files = glob.glob("stocks/*.csv")
-num_stocks = len(files)
-print(f"Found {num_stocks} stock files.")
+DATA_DIR = "stocks"
 
-# Count stocks with data in last 5 years
-valid_files = []
-for file in files:
-    df = pd.read_csv(file)[["published_date", "close"]]
-    df['published_date'] = pd.to_datetime(df['published_date'])
-    df = df[(df['published_date'] >= start_date) & (df['published_date'] <= end_date)]
-    if not df.empty:
-        valid_files.append(file)
-    else:
-        print(f"Skipping {file}: no data in last 5 years")
+# ================= STATE =================
+cash = INITIAL_CASH
+holdings = {}
+trade_log = []
 
-num_valid_stocks = len(valid_files)
-if num_valid_stocks == 0:
-    print("No stock data available in last 5 years. Exiting.")
-    exit()
+# ================= LOAD ALL STOCKS =================
+all_data = []
 
-investment_per_stock = initial_cash / num_valid_stocks
-print(f"Investing Rs.{investment_per_stock:.2f} per stock (for {num_valid_stocks} valid stocks).")
+for file in os.listdir(DATA_DIR):
+    if not file.endswith(".csv"):
+        continue
+    stock = file.replace(".csv", "")
+    df = pd.read_csv(os.path.join(DATA_DIR, file))
 
-# Initialize portfolio as empty DataFrame
-portfolio = pd.DataFrame()
+    df["published_date"] = pd.to_datetime(df["published_date"])
+    df = df.sort_values("published_date")
 
-# Process each stock incrementally
-for i, file in enumerate(valid_files, 1):
-    df = pd.read_csv(file)[["published_date", "close"]]
-    df['published_date'] = pd.to_datetime(df['published_date'])
-    df = df[(df['published_date'] >= start_date) & (df['published_date'] <= end_date)]
-    
-    first_price = df['close'].iloc[0]
-    shares = investment_per_stock / first_price
-    df['Value'] = df['close'] * shares
-    df = df[['published_date', 'Value']].rename(columns={'published_date': 'Date'})
-    
-    if portfolio.empty:
-        portfolio = df.copy()
-    else:
-        # Merge incrementally and sum into Portfolio Value
-        portfolio = pd.merge(portfolio, df, on='Date', how='outer', suffixes=('', '_tmp'))
-        portfolio['Value'] = portfolio['Value'].fillna(0) + portfolio['Value_tmp'].fillna(0)
-        portfolio = portfolio[['Date', 'Value']]
+    # Filter 5 years only
+    df = df[(df["published_date"] >= START_DATE) &
+            (df["published_date"] <= END_DATE)]
 
-# Finalize portfolio
-portfolio = portfolio.rename(columns={'Value': 'Portfolio Value'})
-portfolio = portfolio.sort_values('Date').ffill().reset_index(drop=True)
+    if df.empty:
+        continue
 
-# Save CSV
-portfolio.to_csv("portfolio_simulation.csv", index=False)
-print(f"Portfolio simulation saved as 'portfolio_simulation.csv' ")
+    # MA10 calculation
+    df["MA10"] = df["close"].rolling(10).mean()
+
+    df["Stock"] = stock
+    all_data.append(df)
+
+# Combine all stocks
+combined_df = pd.concat(all_data)
+combined_df = combined_df.sort_values("published_date")
+
+# Initialize holdings
+for stock in combined_df["Stock"].unique():
+    holdings[stock] = 0
+
+# ================= SIMULATION =================
+for date, daily_data in combined_df.groupby("published_date"):
+    for _, row in daily_data.iterrows():
+        stock = row["Stock"]
+        price = row["close"]
+        ma10 = row["MA10"]
+
+        if pd.isna(ma10):
+            continue  # skip first 10 days
+
+        # BUY if price < MA10
+        if price < ma10:
+            cost = price * BUY_QTY
+            if cash >= cost:
+                cash -= cost
+                holdings[stock] += BUY_QTY
+                trade_log.append([date, stock, "BUY", price, BUY_QTY, cost, cash, holdings[stock]])
+
+        # SELL if price > MA10
+        elif price > ma10:
+            if holdings[stock] >= BUY_QTY:
+                revenue = price * BUY_QTY
+                cash += revenue
+                holdings[stock] -= BUY_QTY
+                trade_log.append([date, stock, "SELL", price, BUY_QTY, revenue, cash, holdings[stock]])
+
+# ================= CREATE DATAFRAMES =================
+
+# 1️⃣ Trade history
+trade_df = pd.DataFrame(
+    trade_log,
+    columns=["Date", "Stock", "Action", "Price", "Quantity", "Amount", "Remaining_Cash", "Total_Shares"]
+)
+
+# 2️⃣ Stock holdings
+holdings_df = pd.DataFrame([
+    {"Stock": stock, "Shares_Held": shares}
+    for stock, shares in holdings.items()
+])
+
+# 3️⃣ Portfolio summary
+latest_prices = {}
+
+for stock in holdings.keys():
+    df = pd.read_csv(os.path.join(DATA_DIR, f"{stock}.csv"))
+    latest_prices[stock] = df["close"].iloc[-1]
+
+total_stock_value = sum(holdings[stock] * latest_prices.get(stock, 0) for stock in holdings)
+
+portfolio_summary_df = pd.DataFrame([{
+    "Initial_Investment": INITIAL_CASH,
+    "Final_Remaining_Cash": cash,
+    "Total_Stock_Value": total_stock_value,
+    "Total_Portfolio_Value": cash + total_stock_value,
+    "Profit_or_Loss": (cash + total_stock_value) - INITIAL_CASH
+}])
+
+# ================= EXPORT TO CSV =================
+trade_df.to_csv("trade_history_MA10.csv", index=False)
+holdings_df.to_csv("stock_holdings_MA10.csv", index=False)
+portfolio_summary_df.to_csv("portfolio_summary_MA10.csv", index=False)
+
+print(" CSV files created: trade_history_MA10.csv, stock_holdings_MA10.csv, portfolio_summary_MA10.csv")
