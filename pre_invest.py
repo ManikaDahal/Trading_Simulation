@@ -3,58 +3,103 @@ import os
 
 DATA_DIR = "stocks"
 INITIAL_CAPITAL = 200000
-START_DATE = pd.to_datetime("2021-01-25")
-
-records = []
-remaining_cash = INITIAL_CAPITAL
+SEARCH_START_DATE = pd.to_datetime("2019-01-01")
+SEARCH_END_DATE = pd.to_datetime("2021-01-25")
+MIN_SHARES = 15
 
 files = os.listdir(DATA_DIR)
-capital_per_stock = INITIAL_CAPITAL / len(files)  # initial capital allocation per stock
+selected_files = files[:30]
 
-for file in files:
+stock_min_prices = []
+
+# Phase 1: Gather Min Prices
+print("Gathering minimum prices...")
+for file in selected_files:
     stock = file.replace(".csv", "")
-    df = pd.read_csv(os.path.join(DATA_DIR, file))
+    file_path = os.path.join(DATA_DIR, file)
+    
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        print(f"Error reading {stock}: {e}")
+        continue
+
+    if "published_date" not in df.columns:
+        print(f"Skipping {stock}: 'published_date' column missing")
+        continue
+        
     df["published_date"] = pd.to_datetime(df["published_date"])
     df = df.sort_values("published_date")
-
-    # Only consider prices before trading starts
-    df_before = df[df["published_date"] < START_DATE]
-
-    if df_before.empty:
-        print(f"Skipping {stock} — no data before START_DATE")
-        continue
-
-    # Find the row with the lowest price before start date
-    min_row = df_before.loc[df_before["close"].idxmin()]
-    min_price = min_row["close"]
     
-    # Max possible shares we can buy at min_price using allocated capital
-    max_qty_possible = int(capital_per_stock // min_price)
+    mask = (df["published_date"] >= SEARCH_START_DATE) & (df["published_date"] < SEARCH_END_DATE)
+    df_period = df[mask]
 
-    if max_qty_possible < 15:
-        print(f"Skipping {stock} — cannot buy at least 15 shares even at historical low")
+    if df_period.empty:
+        print(f"Skipping {stock}: No data in range {SEARCH_START_DATE.date()} - {SEARCH_END_DATE.date()}")
         continue
 
-    # Buy as many as capital allows (at least 15)
-    qty = max_qty_possible
-    invested = qty * min_price
-    remaining_cash -= invested
+    min_row = df_period.loc[df_period["close"].idxmin()]
+    min_price = min_row["close"]
+    min_date = min_row["published_date"]
 
-    records.append({
+    stock_min_prices.append({
         "Stock": stock,
-        "Buy_Date": min_row["published_date"].date(),  # date of historical low
-        "Buy_Price": min_price,
-        "Quantity": qty,
-        "Invested_Amount": invested
+        "Min_Price": min_price,
+        "Date": min_date
     })
 
-# Save initial investment
-pd.DataFrame(records).to_csv("initial_investment15.csv", index=False)
+# Phase 2: Check Feasibility
+total_min_cost = sum(item["Min_Price"] * MIN_SHARES for item in stock_min_prices)
 
-# Save cash summary
-pd.DataFrame([{
-    "Total_Invested": sum(r["Invested_Amount"] for r in records),
-    "Remaining_Cash": remaining_cash
-}]).to_csv("cash_summary15.csv", index=False)
+print(f"Total stocks found: {len(stock_min_prices)}")
+print(f"Minimum capital required for 15 shares each: {total_min_cost:.2f}")
 
-print("Pre-investment completed before trading start.")
+if total_min_cost > INITIAL_CAPITAL:
+    print(f"CRITICAL WARNING: Cannot buy 15 shares of all {len(stock_min_prices)} stocks with {INITIAL_CAPITAL}. Short by {total_min_cost - INITIAL_CAPITAL}")
+
+else:
+    print("Optimization: Sufficient capital. Distributing remaining capital...")
+    
+    # Strategy: Buy 15 of each first.
+    remaining_cash = INITIAL_CAPITAL - total_min_cost
+    
+    # Distribute remaining cash equally to buy more shares
+    extra_cash_per_stock = remaining_cash / len(stock_min_prices)
+    
+    records = []
+    
+    for item in stock_min_prices:
+        stock = item["Stock"]
+        price = item["Min_Price"]
+        date = item["Date"]
+        
+        # Base 15 shares
+        qty = MIN_SHARES
+        
+        # Add extra shares
+        extra_qty = int(extra_cash_per_stock // price)
+        qty += extra_qty
+        
+        invested = qty * price
+        
+        records.append({
+            "Stock": stock,
+            "Buy_Date": date.date(),
+            "Buy_Price": price,
+            "Quantity": qty,
+            "Invested_Amount": invested
+        })
+        
+    final_df = pd.DataFrame(records)
+    final_df.to_csv("initial_investment.csv", index=False)
+    
+    real_invested = final_df["Invested_Amount"].sum()
+    final_cash = INITIAL_CAPITAL - real_invested
+    
+    print(f"Investment Summary:")
+    print(f"Total Invested: {real_invested}")
+    print(f"Remaining Cash: {final_cash}")
+    print(f"Stocks Bought: {len(final_df)}")
+    
+    with open("remaining_cash.txt", "w") as f:
+        f.write(str(final_cash))

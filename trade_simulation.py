@@ -1,97 +1,323 @@
 import pandas as pd
 import os
+import numpy as np
 
-# --- CONFIGURATION ---
+# CONFIGURATION
 DATA_DIR = "stocks"
 START_DATE = pd.to_datetime("2021-01-25")
-END_DATE = pd.to_datetime("2026-01-25")
+END_DATE = pd.to_datetime("2026-01-25")  
 
-MIN_BUY_QTY = 15        # Minimum shares per trade
-BASE_CASH_PERCENT = 0.2 # Fraction of cash to use per trade
-TAKE_PROFIT = 1.10      # 10% rise
-STOP_LOSS = 0.95        # 5% fall
+INITIAL_CASH_FILE = "remaining_cash.txt"
+INITIAL_INVESTMENT_FILE = "initial_investment.csv"
 
-# --- LOAD INITIAL PORTFOLIO ---
-portfolio = pd.read_csv("initial_investment15.csv").set_index("Stock")[["Quantity"]]
-cash = pd.read_csv("cash_summary15.csv")["Remaining_Cash"][0]
+# Strategy Parameters
+MIN_SHARES = 15
+TRAILING_STOP_PCT = 0.07  # Very tight 7% drop
+PROFIT_TAKE_PCT = 0.25    # Lock in 25% gains-sell
+MAX_POSITION_PCT = 0.25  # Max 25% per stock
 
-transactions = [] 
+# Moving Averages (Super Fast Trend)
+SMA_FAST = 10
+SMA_SLOW = 30
 
-# --- LOAD STOCK DATA ---
-stock_data = {}
-last_buy_price = {}
+
+# LOAD DATA
+print("Loading initial investment data...")
+
+# Load Initial Portfolio
+try:
+    initial_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
+    portfolio = {}
+    for _, row in initial_df.iterrows():
+        stock = row["Stock"]
+        portfolio[stock] = {
+            "Qty": row["Quantity"],
+            "Entry_Price": row["Buy_Price"],
+            "Max_Price": row["Buy_Price"]  # Initialize Max Price for Trailing Stop
+        }
+    initial_invested = initial_df["Invested_Amount"].sum()
+except FileNotFoundError:
+    print(f"Error: {INITIAL_INVESTMENT_FILE} not found. Please run pre_invest.py first.")
+    exit()
+
+# Load Initial Cash
+try:
+    with open(INITIAL_CASH_FILE, "r") as f:
+        cash = float(f.read().strip())
+except FileNotFoundError:
+    cash = 0.0
+
+initial_total_value = initial_invested + cash
+target_value = initial_total_value * 2
+
+print(f"Initial Portfolio Value: {initial_total_value:,.2f}")
+print(f"Target Value (Double):   {target_value:,.2f}")
+
+# Load Market Data
+print("Loading stock market data...")
+market_data = {}
+all_stocks = []
 
 for file in os.listdir(DATA_DIR):
-    stock = file.replace(".csv", "")
-    df = pd.read_csv(os.path.join(DATA_DIR, file))
-    df["published_date"] = pd.to_datetime(df["published_date"])
-    df = df.sort_values("published_date")
+    if not file.endswith(".csv"):
+        continue
     
-    # remove duplicate dates, keep last price
-    df = df.drop_duplicates(subset="published_date", keep="last")
+    stock_name = file.replace(".csv", "")
+    file_path = os.path.join(DATA_DIR, file)
     
-   # set index
-    df = df.set_index("published_date")[["close"]]
+    try:
+        df = pd.read_csv(file_path)
+        if "published_date" not in df.columns or "close" not in df.columns:
+            continue
+            
+        df["published_date"] = pd.to_datetime(df["published_date"])
+        df = df.sort_values("published_date").drop_duplicates("published_date").set_index("published_date")        
+        
+        # Calculate Indicators
+        df["SMA_FAST"] = df["close"].rolling(window=SMA_FAST).mean()
+        df["SMA_SLOW"] = df["close"].rolling(window=SMA_SLOW).mean()
+        
+        # Filter for simulation period (with some buffer for SMA)
+        mask = df.index >= (START_DATE - pd.Timedelta(days=365))
+        df = df[mask]
+        
+        market_data[stock_name] = df
+        all_stocks.append(stock_name)
+        
+    except Exception as e:
+        print(f"Skipping {stock_name}: {e}")
 
-# reindex to full calendar, forward-fill missing prices
-    full_calendar = pd.date_range(start=START_DATE, end=END_DATE, freq="D")
-    df = df.reindex(full_calendar)
-    df["close"] = df["close"].ffill()
+print(f"Loaded data for {len(market_data)} stocks.")
+
+# SIMULATION LOOP
+print("Starting simulation...")
+
+dates = pd.date_range(START_DATE, END_DATE, freq='D')
+transactions = []
+daily_stats = []
+
+for current_date in dates:
+    # 1. Update Portfolio Value & Check Exists
+    current_portfolio_value = 0
+    active_stocks = list(portfolio.keys())
     
-    stock_data[stock] = df
-    last_buy_price[stock] = None
+    # Pre-fetch prices for valid stocks today
+    today_prices = {}
     
-    # ensure stock exists in portfolio
-    if stock not in portfolio.index:
-        portfolio.loc[stock] = {"Quantity": 0}
+    for stock in all_stocks:
+        df = market_data[stock]
+        #Which stocks have price data for current_date
+        if current_date in df.index:
+            today_prices[stock] = {
+                "Close": df.loc[current_date]["close"],
+                "SMA_FAST": df.loc[current_date]["SMA_FAST"],
+                "SMA_SLOW": df.loc[current_date]["SMA_SLOW"]
+            }
+    
+    if not today_prices:
+        continue # Weekend or Holiday
+        
+    # Calculate Equity
+    for stock, data in portfolio.items():
+        if stock in today_prices:
+            price = today_prices[stock]["Close"]
+            current_portfolio_value += data["Qty"] * price
+            
+            # Update Max Price for Trailing Stop
+            if price > data["Max_Price"]:
+                portfolio[stock]["Max_Price"] = price
+        else:
+            pass
 
-# --- TRADING SIMULATION ---
-full_calendar = pd.date_range(start=START_DATE, end=END_DATE, freq="D")
-daily_values = []
+    total_equity = cash + current_portfolio_value
+    
+    # Log Daily Stats
+    daily_stats.append({
+        "Date": current_date,
+        "Total_Equity": total_equity,
+        "Cash": cash
+    })
 
-for date in full_calendar:
-    total_value = cash
+    # Check Target
+    if total_equity >= target_value:
+        print(f" GOAL REACHED! Date: {current_date.date()}, Equity: {total_equity:,.2f}")
+       
 
-    for stock, df in stock_data.items():
-        price = df.loc[date, "close"]
+    # STRATEGY EXECUTION    
+    # 2. SELL LOGIC (Trailing Stop & Take Profit)
+    positions_to_sell = []
+    
+    for stock, data in portfolio.items():
+        if stock not in today_prices:
+            continue
+            
+        current_price = today_prices[stock]["Close"]
+        max_price = data["Max_Price"]
+        entry_price = data["Entry_Price"]
+        qty = data["Qty"]
+        
+        # Conditions
+        stop_price = max_price * (1 - TRAILING_STOP_PCT)
+        take_profit_price = entry_price * (1 + PROFIT_TAKE_PCT)
+        
+        # Sell if stop hit OR take profit hit
+        if current_price < stop_price or current_price >= take_profit_price:
+            positions_to_sell.append(stock)
+    
+    # Track sold stocks to prevent re-buying same day
+    sold_today = set()
 
-        qty = portfolio.loc[stock, "Quantity"]
+    for stock in positions_to_sell:
+        price = today_prices[stock]["Close"]
+        qty = portfolio[stock]["Qty"]
+        entry_price = portfolio[stock]["Entry_Price"]
+        
+        revenue = qty * price
+        cost = qty * entry_price
+        pnl = revenue - cost
+        
+        cash += revenue
+        del portfolio[stock]
+        sold_today.add(stock)
+        
+        transactions.append({
+            "Date": current_date.date(),
+            "Stock": stock,
+            "Action": "SELL",
+            "Qty": qty,
+            "Price": price,
+            "Total_Amount": revenue,
+            "Profit_Loss": pnl
+        })
 
-        # --- BUY LOGIC ---
-        trade_cash = cash * BASE_CASH_PERCENT
-        buy_qty = max(MIN_BUY_QTY, int(trade_cash // price))
-        if buy_qty * price <= cash:
-            qty += buy_qty
-            cash -= buy_qty * price
-            last_buy_price[stock] = price
-            portfolio.loc[stock, "Quantity"] = qty
-            transactions.append([date.strftime("%Y-%m-%d"), stock, "BUY", price, buy_qty, cash])
+    # 3. BUY LOGIC (Faster Trend Following)
+    # If we have cash, look for opportunities
+    if cash > 5000: # Min cash check
+        potential_buys = []
+        
+        for stock in all_stocks:
+            if stock in portfolio:
+                continue # Already own it
+            
+            if stock in sold_today:
+                continue # Sold today, don't rebuy immediately
+            
+            if stock not in today_prices:
+                continue
+                
+            price = today_prices[stock]["Close"]
+            sma_fast = today_prices[stock]["SMA_FAST"] 
+            sma_slow = today_prices[stock]["SMA_SLOW"] 
+            
+            
+            # Logic: SMA_FAST > SMA_SLOW (Uptrend)
+            if pd.notna(sma_fast) and pd.notna(sma_slow):
+                if price > sma_fast and sma_fast > sma_slow:
+                     potential_buys.append(stock)
+        
+        # Buy Logic
+        if potential_buys:
+            # Pick random one
+            target_stock = np.random.choice(potential_buys)
+            price = today_prices[target_stock]["Close"]
+            
+            # Position Sizing
+            max_allocation = total_equity * MAX_POSITION_PCT
+            invest_amount = min(cash, max_allocation)
+            
+            qty_to_buy = int(invest_amount // price)
+            
+            # CRITICAL: Min Shares Condition
+            if qty_to_buy >= MIN_SHARES:
+                cost = qty_to_buy * price
+                cash -= cost
+                
+                portfolio[target_stock] = {
+                    "Qty": qty_to_buy,
+                    "Entry_Price": price,
+                    "Max_Price": price
+                }
+                
+                transactions.append({
+                    "Date": current_date.date(),
+                    "Stock": target_stock,
+                    "Action": "BUY",
+                    "Qty": qty_to_buy,
+                    "Price": price,
+                    "Total_Amount": -cost,
+                    "Profit_Loss": 0
+                })
 
-        # --- SELL LOGIC ---
-        sell_qty = 0
-        if last_buy_price[stock]:
-            if price >= last_buy_price[stock] * TAKE_PROFIT or price <= last_buy_price[stock] * STOP_LOSS:
-                sell_qty = qty  # sell all
 
-        if sell_qty > 0:
-            qty -= sell_qty
-            cash += sell_qty * price
-            last_buy_price[stock] = None
-            portfolio.loc[stock, "Quantity"] = qty
-            transactions.append([date.strftime("%Y-%m-%d"), stock, "SELL", price, sell_qty, cash])
+# FINAL SUMMARY & REPORT GENERATION
+print("\nSimulation Complete.")
 
-        total_value += qty * price
+# 1. Calculate Final Stats
+final_portfolio_val = 0
+final_holdings = []
 
-    daily_values.append([date.strftime("%Y-%m-%d"), cash, total_value])
+for stock, data in portfolio.items():
+    # Get last known price
+    if stock in market_data:
+        last_price = market_data[stock].iloc[-1]["close"]
+    else:
+        last_price = data["Entry_Price"] # Fallback
+        
+    val = data["Qty"] * last_price
+    final_portfolio_val += val
+    
+    final_holdings.append({
+        "Stock": stock,
+        "Quantity": data["Qty"],
+        "Current_Price": round(last_price, 2),
+        "Total_Value": round(val, 2)
+    })
 
-# --- SAVE CSV FILES ---
-pd.DataFrame(transactions, columns=["Date", "Stock", "Action", "Price", "Quantity", "Cash_After"]) \
-    .to_csv("transactions15.csv", index=False)
+final_total_equity = cash + final_portfolio_val
+total_profit = final_total_equity - initial_total_value
+profit_pct = (total_profit / initial_total_value) * 100 if initial_total_value > 0 else 0
 
-pd.DataFrame(daily_values, columns=["Date", "Cash", "Total_Portfolio_Value"]) \
-    .to_csv("daily_portfolio_value15.csv", index=False)
+# 2. Console Output
+print("="*30)
+print("FINAL RESULTS")
+print("="*30)
+print(f"Initial Value:       {initial_total_value:,.2f}")
+print(f"Final Value:         {final_total_equity:,.2f}")
+print(f"Total Profit:        {total_profit:,.2f}")
+print(f"Return (%):          {profit_pct:.2f}%")
+print(f"Target (Double):     {' ACHIEVED' if final_total_equity >= target_value else ' NOT REACHED'}")
+print("="*30)
 
-portfolio.reset_index().to_csv("final_holdings15.csv", index=False)
+# 3. Generate Unified CSV Report
+report_file = "trading_report_final.csv"
 
-print("Simulation completed successfully!")
-print("Files generated: transactions15.csv, daily_portfolio_value15.csv, final_holdings15.csv")
+with open(report_file, "w") as f:
+    # --- SUMMARY SECTION ---
+    f.write("SUMMARY\n")
+    f.write("Metric,Value\n")
+    f.write(f"Initial Investment,{initial_total_value:.2f}\n")
+    f.write(f"Final Value,{final_total_equity:.2f}\n")
+    f.write(f"Total Profit,{total_profit:.2f}\n")
+    f.write(f"Return %,{profit_pct:.2f}%\n")
+    f.write(f"Target Reached,{'Yes' if final_total_equity >= target_value else 'No'}\n")
+    f.write("\n") # Spacer
+
+    # --- HOLDINGS SECTION ---
+    f.write("CURRENT HOLDINGS\n")
+    if final_holdings:
+        df_holdings = pd.DataFrame(final_holdings)
+        df_holdings.to_csv(f, index=False)
+    else:
+        f.write("No holdings.\n")
+    f.write("\n") # Spacer
+
+    # --- TRADE HISTORY SECTION ---
+    f.write("TRADE HISTORY\n")
+    if transactions:
+        df_trades = pd.DataFrame(transactions)
+        df_trades.to_csv(f, index=False)
+    else:
+        f.write("No trades performed.\n")
+
+print(f"\nReport generated: {report_file}")
+print("Contains: Summary, Current Holdings, and Trade History.")
