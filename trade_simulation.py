@@ -296,30 +296,31 @@ print(f"Return (%):          {profit_pct:.2f}%")
 print(f"Target (Double):     {' ACHIEVED' if final_total_equity >= target_value else ' NOT REACHED'}")
 print("="*30)
 
-# 3. Generate Unified CSV Report
-report_file = "trading_report_v3.csv"
+# 3a. Write Summary to TXT file
+summary_file = "trading_summary.txt"
+with open(summary_file, "w") as f:
+    f.write("=" * 35 + "\n")
+    f.write("       TRADING SIMULATION RESULTS\n")
+    f.write("=" * 35 + "\n")
+    f.write(f"Initial Investment : {initial_total_value:>12,.2f}\n")
+    f.write(f"Final Value        : {final_total_equity:>12,.2f}\n")
+    f.write(f"Total Profit       : {total_profit:>12,.2f}\n")
+    f.write(f"Return (%)         : {profit_pct:>11.2f}%\n")
+    f.write(f"Target Reached     : {'Yes' if final_total_equity >= target_value else 'No':>12}\n")
+    f.write("=" * 35 + "\n")
+print(f"Summary written : {summary_file}")
 
-with open(report_file, "w") as f:
-    # --- SUMMARY SECTION ---
-    f.write("SUMMARY\n")
-    f.write("Metric,Value\n")
-    f.write(f"Initial Investment,{initial_total_value:.2f}\n")
-    f.write(f"Final Value,{final_total_equity:.2f}\n")
-    f.write(f"Total Profit,{total_profit:.2f}\n")
-    f.write(f"Return %,{profit_pct:.2f}%\n")
-    f.write(f"Target Reached,{'Yes' if final_total_equity >= target_value else 'No'}\n")
-    f.write("\n") # Spacer
-
-    # --- TRADE HISTORY SECTION ---
-    f.write("TRADE HISTORY\n")
-    if transactions:
-        df_trades = pd.DataFrame(transactions)
-        df_trades.to_csv(f, index=False)
-    else:
-        f.write("No trades performed.\n")
+# 3b. Write clean Trade History CSV (GitHub table-friendly)
+report_file = "trading_report_final.csv"
+if transactions:
+    df_trades = pd.DataFrame(transactions)
+    df_trades.to_csv(report_file, index=False)
+else:
+    pd.DataFrame(columns=["Date","Stock","Action","Qty","Price","Total_Amount","Profit_Loss","Reason"]).to_csv(report_file, index=False)
+print(f"Trade history written: {report_file}")
 
 # 4. Update Initial Investment CSV with Current Info
-print("Updating initial_investment_updated.csv with current state...")
+
 try:
     # Read original
     initial_comparison_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
@@ -348,11 +349,29 @@ try:
     
     # Merge
     updated_initial_df = pd.concat([initial_comparison_df, pd.DataFrame(current_states)], axis=1)
-    updated_initial_file = "initial_investment_comparison_final.csv"
+    
+    # Calculate Totals
+    totals = {
+        "Stock": "TOTAL",
+        "Buy_Date": "-",
+        "Buy_Price": round(updated_initial_df["Buy_Price"].sum(), 2),
+        "Quantity": updated_initial_df["Quantity"].sum(),
+        "Invested_Amount": round(updated_initial_df["Invested_Amount"].sum(), 2),
+        "Current_Qty": updated_initial_df["Current_Qty"].sum(),
+        "Current_Price": round(updated_initial_df["Current_Price"].sum(), 2),
+        "Current_Value": round(updated_initial_df["Current_Value"].sum(), 2)
+    }
+    
+    # Append total row
+    updated_initial_df = pd.concat([updated_initial_df, pd.DataFrame([totals])], ignore_index=True)
+    
+    updated_initial_file = "portfolio_comparison.csv"
     updated_initial_df.to_csv(updated_initial_file, index=False)
     print(f"Updated: {updated_initial_file}")
 except Exception as e:
     print(f"Failed to update initial_investment: {e}")
 
-print(f"\nReport generated: {report_file}")
-print("Contains: Summary, Current Holdings, and Trade History (with reasons).")
+print(f"\nAll files generated successfully.")
+print(f"  - Summary  : {summary_file}")
+print(f"  - Trades   : {report_file}")
+print(f"  - Holdings : {updated_initial_file}")

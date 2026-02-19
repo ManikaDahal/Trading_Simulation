@@ -1,0 +1,9 @@
+===================================
+       TRADING SIMULATION RESULTS
+===================================
+Initial Investment :   200,000.00
+Final Value        :   568,089.85
+Total Profit       :   368,089.85
+Return (%)         :      184.04%
+Target Reached     :          Yes
+===================================
