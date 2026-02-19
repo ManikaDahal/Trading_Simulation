@@ -145,7 +145,7 @@ for current_date in dates:
 
     # STRATEGY EXECUTION    
     # 2. SELL LOGIC (Trailing Stop & Take Profit)
-    positions_to_sell = []
+    positions_to_sell = [] # Will store (stock, reason)
     
     for stock, data in portfolio.items():
         if stock not in today_prices:
@@ -161,13 +161,19 @@ for current_date in dates:
         take_profit_price = entry_price * (1 + PROFIT_TAKE_PCT)
         
         # Sell if stop hit OR take profit hit
-        if current_price < stop_price or current_price >= take_profit_price:
-            positions_to_sell.append(stock)
+        reason = ""
+        if current_price < stop_price:
+            reason = f"Trailing Stop ({TRAILING_STOP_PCT*100:.0f}% drop)"
+        elif current_price >= take_profit_price:
+            reason = f"Take Profit ({PROFIT_TAKE_PCT*100:.0f}% gain)"
+            
+        if reason:
+            positions_to_sell.append((stock, reason))
     
     # Track sold stocks to prevent re-buying same day
     sold_today = set()
 
-    for stock in positions_to_sell:
+    for stock, reason in positions_to_sell:
         price = today_prices[stock]["Close"]
         qty = portfolio[stock]["Qty"]
         entry_price = portfolio[stock]["Entry_Price"]
@@ -187,7 +193,8 @@ for current_date in dates:
             "Qty": qty,
             "Price": price,
             "Total_Amount": revenue,
-            "Profit_Loss": pnl
+            "Profit_Loss": pnl,
+            "Reason": reason
         })
 
     # 3. BUY LOGIC (Faster Trend Following)
@@ -245,7 +252,8 @@ for current_date in dates:
                     "Qty": qty_to_buy,
                     "Price": price,
                     "Total_Amount": -cost,
-                    "Profit_Loss": 0
+                    "Profit_Loss": 0,
+                    "Reason": "Trend Entry"
                 })
 
 
@@ -289,7 +297,7 @@ print(f"Target (Double):     {' ACHIEVED' if final_total_equity >= target_value 
 print("="*30)
 
 # 3. Generate Unified CSV Report
-report_file = "trading_report_final.csv"
+report_file = "trading_report_v3.csv"
 
 with open(report_file, "w") as f:
     # --- SUMMARY SECTION ---
@@ -302,15 +310,6 @@ with open(report_file, "w") as f:
     f.write(f"Target Reached,{'Yes' if final_total_equity >= target_value else 'No'}\n")
     f.write("\n") # Spacer
 
-    # --- HOLDINGS SECTION ---
-    f.write("CURRENT HOLDINGS\n")
-    if final_holdings:
-        df_holdings = pd.DataFrame(final_holdings)
-        df_holdings.to_csv(f, index=False)
-    else:
-        f.write("No holdings.\n")
-    f.write("\n") # Spacer
-
     # --- TRADE HISTORY SECTION ---
     f.write("TRADE HISTORY\n")
     if transactions:
@@ -319,5 +318,41 @@ with open(report_file, "w") as f:
     else:
         f.write("No trades performed.\n")
 
+# 4. Update Initial Investment CSV with Current Info
+print("Updating initial_investment_updated.csv with current state...")
+try:
+    # Read original
+    initial_comparison_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
+    
+    current_states = []
+    for _, row in initial_comparison_df.iterrows():
+        stock = row["Stock"]
+        if stock in portfolio:
+            c_qty = portfolio[stock]["Qty"]
+            # Get last known price
+            if stock in market_data:
+                c_price = market_data[stock].iloc[-1]["close"]
+            else:
+                c_price = portfolio[stock]["Entry_Price"]
+            c_val = c_qty * c_price
+        else:
+            c_qty = 0
+            c_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
+            c_val = 0
+            
+        current_states.append({
+            "Current_Qty": c_qty,
+            "Current_Price": round(c_price, 2),
+            "Current_Value": round(c_val, 2)
+        })
+    
+    # Merge
+    updated_initial_df = pd.concat([initial_comparison_df, pd.DataFrame(current_states)], axis=1)
+    updated_initial_file = "initial_investment_comparison_final.csv"
+    updated_initial_df.to_csv(updated_initial_file, index=False)
+    print(f"Updated: {updated_initial_file}")
+except Exception as e:
+    print(f"Failed to update initial_investment: {e}")
+
 print(f"\nReport generated: {report_file}")
-print("Contains: Summary, Current Holdings, and Trade History.")
+print("Contains: Summary, Current Holdings, and Trade History (with reasons).")
