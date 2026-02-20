@@ -13,13 +13,15 @@ INITIAL_INVESTMENT_FILE = "initial_investment.csv"
 # Strategy Parameters
 MIN_SHARES = 15
 TRAILING_STOP_PCT = 0.07  # Very tight 7% drop
-PROFIT_TAKE_PCT = 0.25    # Lock in 25% gains-sell
-MAX_POSITION_PCT = 0.25  # Max 25% per stock
+PROFIT_TAKE_PCT = 1.0     # Hold for long-term profit (100% gain)
+MAX_POSITION_PCT = 0.05    # Distribute across more stocks (max 20)
 
 # Moving Averages (Super Fast Trend)
 SMA_FAST = 10
 SMA_SLOW = 30
 
+# Track last sell dates for 4-day gap
+last_sell_dates = {}
 
 # LOAD DATA
 print("Loading initial investment data...")
@@ -33,7 +35,8 @@ try:
         portfolio[stock] = {
             "Qty": row["Quantity"],
             "Entry_Price": row["Buy_Price"],
-            "Max_Price": row["Buy_Price"]  # Initialize Max Price for Trailing Stop
+            "Max_Price": row["Buy_Price"],
+            "Buy_Date": pd.to_datetime(row["Buy_Date"])
         }
     initial_invested = initial_df["Invested_Amount"].sum()
 except FileNotFoundError:
@@ -99,14 +102,12 @@ daily_stats = []
 for current_date in dates:
     # 1. Update Portfolio Value & Check Exists
     current_portfolio_value = 0
-    active_stocks = list(portfolio.keys())
     
     # Pre-fetch prices for valid stocks today
     today_prices = {}
     
     for stock in all_stocks:
         df = market_data[stock]
-        #Which stocks have price data for current_date
         if current_date in df.index:
             today_prices[stock] = {
                 "Close": df.loc[current_date]["close"],
@@ -126,8 +127,6 @@ for current_date in dates:
             # Update Max Price for Trailing Stop
             if price > data["Max_Price"]:
                 portfolio[stock]["Max_Price"] = price
-        else:
-            pass
 
     total_equity = cash + current_portfolio_value
     
@@ -138,29 +137,26 @@ for current_date in dates:
         "Cash": cash
     })
 
-    # Check Target
-    if total_equity >= target_value:
-        print(f" GOAL REACHED! Date: {current_date.date()}, Equity: {total_equity:,.2f}")
-       
-
     # STRATEGY EXECUTION    
-    # 2. SELL LOGIC (Trailing Stop & Take Profit)
-    positions_to_sell = [] # Will store (stock, reason)
+    # 2. SELL LOGIC (Trailing Stop & Take Profit & 4-Day Gap PER STOCK)
+    positions_to_sell = []
     
     for stock, data in portfolio.items():
         if stock not in today_prices:
             continue
             
+        # 4-Day Gap condition (per stock)
+        if (current_date - data["Buy_Date"]).days < 4:
+            continue
+
         current_price = today_prices[stock]["Close"]
         max_price = data["Max_Price"]
         entry_price = data["Entry_Price"]
-        qty = data["Qty"]
         
         # Conditions
         stop_price = max_price * (1 - TRAILING_STOP_PCT)
         take_profit_price = entry_price * (1 + PROFIT_TAKE_PCT)
         
-        # Sell if stop hit OR take profit hit
         reason = ""
         if current_price < stop_price:
             reason = f"Trailing Stop ({TRAILING_STOP_PCT*100:.0f}% drop)"
@@ -170,9 +166,6 @@ for current_date in dates:
         if reason:
             positions_to_sell.append((stock, reason))
     
-    # Track sold stocks to prevent re-buying same day
-    sold_today = set()
-
     for stock, reason in positions_to_sell:
         price = today_prices[stock]["Close"]
         qty = portfolio[stock]["Qty"]
@@ -181,33 +174,40 @@ for current_date in dates:
         revenue = qty * price
         cost = qty * entry_price
         pnl = revenue - cost
+        gain_loss_pct = (pnl / cost) * 100 if cost > 0 else 0
         
         cash += revenue
+        last_sell_dates[stock] = current_date
         del portfolio[stock]
-        sold_today.add(stock)
+        
+        # Update current equity for report column
+        current_portfolio_value -= revenue
         
         transactions.append({
-            "Date": current_date.date(),
+            "Date": current_date.strftime("%d-%b-%Y"),
             "Stock": stock,
             "Action": "SELL",
             "Qty": qty,
-            "Price": price,
-            "Total_Amount": revenue,
-            "Profit_Loss": pnl,
+            "Price": round(price, 2),
+            "Total_Amount": round(revenue, 2),
+            "Cash_In_Hand": round(cash, 2),
+            "Profit_Loss": round(pnl, 2),
+            "Gain_Loss_Pct": f"{gain_loss_pct:.2f}%",
+            "Portfolio_Value": round(cash + current_portfolio_value, 2),
             "Reason": reason
         })
 
-    # 3. BUY LOGIC (Faster Trend Following)
-    # If we have cash, look for opportunities
-    if cash > 5000: # Min cash check
+    # 3. BUY LOGIC (Trend Strength Sorting + 4-Day Gap PER STOCK)
+    if cash > 1000:
         potential_buys = []
         
         for stock in all_stocks:
             if stock in portfolio:
-                continue # Already own it
+                continue
             
-            if stock in sold_today:
-                continue # Sold today, don't rebuy immediately
+            # 4-Day Gap condition per stock
+            if stock in last_sell_dates and (current_date - last_sell_dates[stock]).days < 4:
+                continue
             
             if stock not in today_prices:
                 continue
@@ -216,76 +216,69 @@ for current_date in dates:
             sma_fast = today_prices[stock]["SMA_FAST"] 
             sma_slow = today_prices[stock]["SMA_SLOW"] 
             
-            
-            # Logic: SMA_FAST > SMA_SLOW (Uptrend)
             if pd.notna(sma_fast) and pd.notna(sma_slow):
                 if price > sma_fast and sma_fast > sma_slow:
-                     potential_buys.append(stock)
+                     # Calculate Trend Strength
+                     strength = (price - sma_slow) / sma_slow
+                     potential_buys.append((stock, strength))
         
-        # Buy Logic
+        # Sort potential buys by Trend Strength (Descending)
+        potential_buys.sort(key=lambda x: x[1], reverse=True)
+        
         if potential_buys:
-            # Pick random one
-            target_stock = np.random.choice(potential_buys)
-            price = today_prices[target_stock]["Close"]
-            
-            # Position Sizing
-            max_allocation = total_equity * MAX_POSITION_PCT
-            invest_amount = min(cash, max_allocation)
-            
-            qty_to_buy = int(invest_amount // price)
-            
-            # CRITICAL: Min Shares Condition
-            if qty_to_buy >= MIN_SHARES:
-                cost = qty_to_buy * price
-                cash -= cost
+            for target_stock, strength in potential_buys:
+                price = today_prices[target_stock]["Close"]
                 
-                portfolio[target_stock] = {
-                    "Qty": qty_to_buy,
-                    "Entry_Price": price,
-                    "Max_Price": price
-                }
+                # Position Sizing (5% per stock)
+                max_allocation = total_equity * MAX_POSITION_PCT
+                invest_amount = min(cash, max_allocation)
                 
-                transactions.append({
-                    "Date": current_date.date(),
-                    "Stock": target_stock,
-                    "Action": "BUY",
-                    "Qty": qty_to_buy,
-                    "Price": price,
-                    "Total_Amount": -cost,
-                    "Profit_Loss": 0,
-                    "Reason": "Trend Entry"
-                })
-
+                qty_to_buy = int(invest_amount // price)
+                
+                if qty_to_buy >= MIN_SHARES:
+                    cost = qty_to_buy * price
+                    cash -= cost
+                    
+                    portfolio[target_stock] = {
+                        "Qty": qty_to_buy,
+                        "Entry_Price": price,
+                        "Max_Price": price,
+                        "Buy_Date": current_date
+                    }
+                    
+                    transactions.append({
+                        "Date": current_date.strftime("%d-%b-%Y"),
+                        "Stock": target_stock,
+                        "Action": "BUY",
+                        "Qty": qty_to_buy,
+                        "Price": round(price, 2),
+                        "Total_Amount": round(-cost, 2),
+                        "Cash_In_Hand": round(cash, 2),
+                        "Profit_Loss": 0,
+                        "Gain_Loss_Pct": "0.00%",
+                        "Portfolio_Value": round(cash + (current_portfolio_value + cost), 2),
+                        "Reason": f"Trend Entry (Str: {strength:.2f})"
+                    })
+                    
+                    current_portfolio_value += cost
 
 # FINAL SUMMARY & REPORT GENERATION
 print("\nSimulation Complete.")
 
 # 1. Calculate Final Stats
 final_portfolio_val = 0
-final_holdings = []
-
 for stock, data in portfolio.items():
-    # Get last known price
     if stock in market_data:
         last_price = market_data[stock].iloc[-1]["close"]
     else:
-        last_price = data["Entry_Price"] # Fallback
-        
-    val = data["Qty"] * last_price
-    final_portfolio_val += val
-    
-    final_holdings.append({
-        "Stock": stock,
-        "Quantity": data["Qty"],
-        "Current_Price": round(last_price, 2),
-        "Total_Value": round(val, 2)
-    })
+        last_price = data["Entry_Price"]
+    final_portfolio_val += data["Qty"] * last_price
 
 final_total_equity = cash + final_portfolio_val
 total_profit = final_total_equity - initial_total_value
 profit_pct = (total_profit / initial_total_value) * 100 if initial_total_value > 0 else 0
 
-# 2. Console Output
+# Console Output
 print("="*30)
 print("FINAL RESULTS")
 print("="*30)
@@ -293,10 +286,61 @@ print(f"Initial Value:       {initial_total_value:,.2f}")
 print(f"Final Value:         {final_total_equity:,.2f}")
 print(f"Total Profit:        {total_profit:,.2f}")
 print(f"Return (%):          {profit_pct:.2f}%")
-print(f"Target (Double):     {' ACHIEVED' if final_total_equity >= target_value else ' NOT REACHED'}")
 print("="*30)
 
-# 3a. Write Summary to TXT file
+# 2. Generate Portfolio Comparison Report
+try:
+    initial_comp_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
+    comparison_records = []
+    
+    for _, row in initial_comp_df.iterrows():
+        stock = row["Stock"]
+        if stock in portfolio:
+            cur_qty = portfolio[stock]["Qty"]
+            # Last available price in simulation
+            if stock in market_data:
+                cur_price = market_data[stock].iloc[-1]["close"]
+            else:
+                cur_price = portfolio[stock]["Entry_Price"]
+            cur_val = cur_qty * cur_price
+        else:
+            cur_qty = 0
+            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
+            cur_val = 0
+            
+        comparison_records.append({
+            "Stock": stock,
+            "Initial_Buy_Date": row["Buy_Date"],
+            "Initial_Qty": row["Quantity"],
+            "Initial_Price": row["Buy_Price"],
+            "Initial_Value": row["Invested_Amount"],
+            "Current_Qty": cur_qty,
+            "Current_Price": round(cur_price, 2),
+            "Current_Value": round(cur_val, 2)
+        })
+    
+    comp_df = pd.DataFrame(comparison_records)
+    
+    # Add Total Row
+    totals = {
+        "Stock": "TOTAL",
+        "Initial_Buy_Date": "-",
+        "Initial_Qty": comp_df["Initial_Qty"].sum(),
+        "Initial_Price": round(comp_df["Initial_Price"].sum(), 2),
+        "Initial_Value": round(comp_df["Initial_Value"].sum(), 2),
+        "Current_Qty": comp_df["Current_Qty"].sum(),
+        "Current_Price": round(comp_df["Current_Price"].sum(), 2),
+        "Current_Value": round(comp_df["Current_Value"].sum(), 2)
+    }
+    comp_df = pd.concat([comp_df, pd.DataFrame([totals])], ignore_index=True)
+    
+    comparison_file = "portfolio_comparison.csv"
+    comp_df.to_csv(comparison_file, index=False)
+    print(f"Comparison report written: {comparison_file}")
+except Exception as e:
+    print(f"Failed to generate comparison report: {e}")
+
+# 3. Write Summary to TXT
 summary_file = "trading_summary.txt"
 with open(summary_file, "w") as f:
     f.write("=" * 35 + "\n")
@@ -306,72 +350,18 @@ with open(summary_file, "w") as f:
     f.write(f"Final Value        : {final_total_equity:>12,.2f}\n")
     f.write(f"Total Profit       : {total_profit:>12,.2f}\n")
     f.write(f"Return (%)         : {profit_pct:>11.2f}%\n")
-    f.write(f"Target Reached     : {'Yes' if final_total_equity >= target_value else 'No':>12}\n")
     f.write("=" * 35 + "\n")
-print(f"Summary written : {summary_file}")
 
-# 3b. Write clean Trade History CSV (GitHub table-friendly)
-report_file = "trading_report_final.csv"
+# 4. Write Trade History CSV
+report_file = "trading_report.csv"
 if transactions:
     df_trades = pd.DataFrame(transactions)
+    cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
+    df_trades = df_trades[cols]
     df_trades.to_csv(report_file, index=False)
 else:
-    pd.DataFrame(columns=["Date","Stock","Action","Qty","Price","Total_Amount","Profit_Loss","Reason"]).to_csv(report_file, index=False)
+    pd.DataFrame(columns=["Date","Stock","Action","Qty","Price","Total_Amount","Cash_In_Hand","Profit_Loss","Gain_Loss_Pct","Portfolio_Value","Reason"]).to_csv(report_file, index=False)
+
 print(f"Trade history written: {report_file}")
+print("All files generated successfully.")
 
-# 4. Update Initial Investment CSV with Current Info
-
-try:
-    # Read original
-    initial_comparison_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
-    
-    current_states = []
-    for _, row in initial_comparison_df.iterrows():
-        stock = row["Stock"]
-        if stock in portfolio:
-            c_qty = portfolio[stock]["Qty"]
-            # Get last known price
-            if stock in market_data:
-                c_price = market_data[stock].iloc[-1]["close"]
-            else:
-                c_price = portfolio[stock]["Entry_Price"]
-            c_val = c_qty * c_price
-        else:
-            c_qty = 0
-            c_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
-            c_val = 0
-            
-        current_states.append({
-            "Current_Qty": c_qty,
-            "Current_Price": round(c_price, 2),
-            "Current_Value": round(c_val, 2)
-        })
-    
-    # Merge
-    updated_initial_df = pd.concat([initial_comparison_df, pd.DataFrame(current_states)], axis=1)
-    
-    # Calculate Totals
-    totals = {
-        "Stock": "TOTAL",
-        "Buy_Date": "-",
-        "Buy_Price": round(updated_initial_df["Buy_Price"].sum(), 2),
-        "Quantity": updated_initial_df["Quantity"].sum(),
-        "Invested_Amount": round(updated_initial_df["Invested_Amount"].sum(), 2),
-        "Current_Qty": updated_initial_df["Current_Qty"].sum(),
-        "Current_Price": round(updated_initial_df["Current_Price"].sum(), 2),
-        "Current_Value": round(updated_initial_df["Current_Value"].sum(), 2)
-    }
-    
-    # Append total row
-    updated_initial_df = pd.concat([updated_initial_df, pd.DataFrame([totals])], ignore_index=True)
-    
-    updated_initial_file = "portfolio_comparison.csv"
-    updated_initial_df.to_csv(updated_initial_file, index=False)
-    print(f"Updated: {updated_initial_file}")
-except Exception as e:
-    print(f"Failed to update initial_investment: {e}")
-
-print(f"\nAll files generated successfully.")
-print(f"  - Summary  : {summary_file}")
-print(f"  - Trades   : {report_file}")
-print(f"  - Holdings : {updated_initial_file}")
