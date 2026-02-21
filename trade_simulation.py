@@ -308,9 +308,12 @@ try:
             cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
             cur_val = 0
             
+        # Format the date to DD-Mon-YYYY
+        formatted_date = pd.to_datetime(row["Buy_Date"]).strftime("%d-%b-%Y") if row["Buy_Date"] != "-" else "-"
+        
         comparison_records.append({
             "Stock": stock,
-            "Initial_Buy_Date": row["Buy_Date"],
+            "Initial_Buy_Date": formatted_date,
             "Initial_Qty": row["Quantity"],
             "Initial_Price": row["Buy_Price"],
             "Initial_Value": row["Invested_Amount"],

@@ -91,6 +91,7 @@ else:
         })
         
     final_df = pd.DataFrame(records)
+    final_df["Buy_Date"] = pd.to_datetime(final_df["Buy_Date"]).dt.strftime("%d-%b-%Y")
     final_df.to_csv("initial_investment.csv", index=False)
     
     real_invested = final_df["Invested_Amount"].sum()
