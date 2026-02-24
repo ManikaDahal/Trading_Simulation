@@ -4,7 +4,7 @@ import os
 DATA_DIR = "stocks"
 INITIAL_CAPITAL = 200000
 SEARCH_START_DATE = pd.to_datetime("2019-01-01")
-SEARCH_END_DATE = pd.to_datetime("2021-01-25")
+SEARCH_END_DATE = pd.to_datetime("2021-01-24")
 MIN_SHARES = 15
 
 files = os.listdir(DATA_DIR)

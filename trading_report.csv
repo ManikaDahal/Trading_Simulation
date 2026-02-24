@@ -22,6 +22,7 @@ Date,Stock,Action,Qty,Price,Total_Amount,Cash_In_Hand,Profit_Loss,Gain_Loss_Pct,
 31-Jan-21,MEGA,SELL,32,274,8768,316221,3776,75.64%,411179,Trailing Stop (7% drop)
 31-Jan-21,NBB,SELL,30,287,8610,324831,3270,61.24%,411179,Trailing Stop (7% drop)
 31-Jan-21,SANIMA,SELL,24,337,8088,332919,1128,16.21%,411179,Trailing Stop (7% drop)
+,,,,,,,,,,
 31-Jan-21,NHPC,BUY,150,137,-20550,312369,0,0.00%,411179,Trend Entry (Str: 0.14)
 31-Jan-21,MFIL,BUY,47,431,-20257,292112,0,0.00%,411179,Trend Entry (Str: 0.14)
 31-Jan-21,HPPL,BUY,79,260,-20540,271572,0,0.00%,411179,Trend Entry (Str: 0.10)
