@@ -16,6 +16,64 @@ TRAILING_STOP_PCT = 0.07  # Very tight 7% drop
 PROFIT_TAKE_PCT = 1.0     # Hold for long-term profit (100% gain)
 MAX_POSITION_PCT = 0.05    # Distribute across more stocks (max 20)
 
+# --- CORPORATE ACTIONS: MERGERS ---
+# some companies (e.g. banks) stopped trading under the old symbol
+# after a merger.  we keep a map of legacy symbols -> target symbols
+# along with the effective date and conversion ratio.  when the
+# simulation reaches the merge date we convert any outstanding
+# holdings and then stop trading the old symbol thereafter.
+# the dates below should be adjusted to the actual merger closing
+# dates for the securities in question.
+MERGERS = {
+    "NBB": {"target": "NABIL", "date": pd.Timestamp("2022-07-11"), "ratio": 0.43},  # 100 NBB = 43 NABIL
+    "MEGA": {"target": "NIBL", "date": pd.Timestamp("2023-01-11"), "ratio": 10/9},  # 90 MEGA = 100 NIBL
+}
+
+
+def apply_mergers(current_date, today_prices, transactions, cash):
+    """Convert legacy holdings to the new symbol after the merge date."""
+    for legacy, info in MERGERS.items():
+        if current_date >= info["date"]:
+            if legacy in portfolio:
+                old = portfolio[legacy]
+                qty = old["Qty"]
+                new_qty = qty * info.get("ratio", 1.0)
+                price_today = today_prices.get(info["target"], {}).get("Close", old["Entry_Price"])
+                
+                print(f"[{current_date.strftime('%Y-%m-%d')}] MERGER: {qty} {legacy} -> {new_qty:.2f} {info['target']} (Ratio: {info.get('ratio')})")
+                
+                # Record in transactions
+                transactions.append({
+                    "Date": current_date.strftime("%d-%b-%Y"),
+                    "Stock": legacy,
+                    "Action": "MERGER_SWAP",
+                    "Qty": qty,
+                    "Price": info.get("ratio", 1.0),
+                    "Total_Amount": new_qty, 
+                    "Cash_In_Hand": cash,
+                    "Profit_Loss": 0,
+                    "Gain_Loss_Pct": 0,
+                    "Portfolio_Value": 0, # Calculated later
+                    "Reason": f"Swapped {qty} {legacy} into {new_qty:.2f} {info['target']}"
+                })
+
+                portfolio[info["target"]] = {
+                    "Qty": new_qty,
+                    "Entry_Price": price_today,
+                    "Max_Price": price_today,
+                    "Buy_Date": current_date,
+                }
+                del portfolio[legacy]
+
+            # update tradable universe
+            if legacy in all_stocks:
+                all_stocks.remove(legacy)
+            if info["target"] not in all_stocks:
+                if info["target"] in market_data:
+                    all_stocks.append(info["target"])
+                else:
+                    print(f"Warning: merge target {info['target']} not loaded; add its CSV to continue trading after merge.")
+
 # Moving Averages (Super Fast Trend)
 SMA_FAST = 10
 SMA_SLOW = 30
@@ -117,6 +175,9 @@ for current_date in dates:
     
     if not today_prices:
         continue # Weekend or Holiday
+
+    # check for any corporate mergers and convert holdings / universe
+    apply_mergers(current_date, today_prices, transactions, cash)
         
     # Calculate Equity
     for stock, data in portfolio.items():
@@ -293,24 +354,23 @@ try:
     initial_comp_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
     comparison_records = []
     
+    # Track stocks we've already added to avoid duplicates
+    added_stocks = set()
+    
+    # 1. Add stocks from initial investment
     for _, row in initial_comp_df.iterrows():
         stock = row["Stock"]
+        added_stocks.add(stock)
         if stock in portfolio:
             cur_qty = portfolio[stock]["Qty"]
-            # Last available price in simulation
-            if stock in market_data:
-                cur_price = market_data[stock].iloc[-1]["close"]
-            else:
-                cur_price = portfolio[stock]["Entry_Price"]
+            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else portfolio[stock]["Entry_Price"]
             cur_val = cur_qty * cur_price
         else:
             cur_qty = 0
             cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
             cur_val = 0
             
-        # Format the date to DD-Mon-YYYY
         formatted_date = pd.to_datetime(row["Buy_Date"]).strftime("%d-%b-%Y") if row["Buy_Date"] != "-" else "-"
-        
         comparison_records.append({
             "Stock": stock,
             "Initial_Buy_Date": formatted_date,
@@ -321,6 +381,36 @@ try:
             "Current_Price": round(cur_price, 2),
             "Current_Value": round(cur_val, 2)
         })
+        
+    # 2. Add new stocks acquired during simulation
+    for stock, data in portfolio.items():
+        if stock not in added_stocks:
+            cur_qty = data["Qty"]
+            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else data["Entry_Price"]
+            cur_val = cur_qty * cur_price
+            
+            comparison_records.append({
+                "Stock": stock,
+                "Initial_Buy_Date": "-",
+                "Initial_Qty": 0,
+                "Initial_Price": 0,
+                "Initial_Value": 0,
+                "Current_Qty": cur_qty,
+                "Current_Price": round(cur_price, 2),
+                "Current_Value": round(cur_val, 2)
+            })
+            
+    # 3. Add Cash In Hand
+    comparison_records.append({
+        "Stock": "CASH",
+        "Initial_Buy_Date": "-",
+        "Initial_Qty": 0,
+        "Initial_Price": 0,
+        "Initial_Value": 0, # Could technically put initial cash here if tracked
+        "Current_Qty": 0,
+        "Current_Price": 0,
+        "Current_Value": round(cash, 2)
+    })
     
     comp_df = pd.DataFrame(comparison_records)
     
@@ -367,4 +457,3 @@ else:
 
 print(f"Trade history written: {report_file}")
 print("All files generated successfully.")
-
