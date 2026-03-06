@@ -12,82 +12,29 @@ INITIAL_INVESTMENT_FILE = "initial_investment.csv"
 
 # Strategy Parameters
 MIN_SHARES = 15
-TRAILING_STOP_PCT = 0.07  # Very tight 7% drop
-PROFIT_TAKE_PCT = 1.0     # Hold for long-term profit (100% gain)
-MAX_POSITION_PCT = 0.05    # Distribute across more stocks (max 20)
+TRAILING_STOP_PCT = 0.07  # 7% drop
+PROFIT_TAKE_PCT = 1.0     # 100% gain
+REGULAR_LOCK_DAYS = 4
+MERGER_LOCK_DAYS = 15
+MAX_POSITION_PCT = 0.05
 
 # --- CORPORATE ACTIONS: MERGERS ---
-# some companies (e.g. banks) stopped trading under the old symbol
-# after a merger.  we keep a map of legacy symbols -> target symbols
-# along with the effective date and conversion ratio.  when the
-# simulation reaches the merge date we convert any outstanding
-# holdings and then stop trading the old symbol thereafter.
-# the dates below should be adjusted to the actual merger closing
-# dates for the securities in question.
 MERGERS = {
-    "NBB": {"target": "NABIL", "date": pd.Timestamp("2022-07-11"), "ratio": 0.43},  # 100 NBB = 43 NABIL
-    "MEGA": {"target": "NIBL", "date": pd.Timestamp("2023-01-11"), "ratio": 10/9},  # 90 MEGA = 100 NIBL
+    "NBB": {"target": "NABIL", "date": pd.Timestamp("2022-07-11"), "ratio": 0.43},
+    "MEGA": {"target": "NIBL", "date": pd.Timestamp("2023-01-12"), "ratio": 10/9},
 }
 
-
-def apply_mergers(current_date, today_prices, transactions, cash):
-    """Convert legacy holdings to the new symbol after the merge date."""
-    for legacy, info in MERGERS.items():
-        if current_date >= info["date"]:
-            if legacy in portfolio:
-                old = portfolio[legacy]
-                qty = old["Qty"]
-                new_qty = qty * info.get("ratio", 1.0)
-                price_today = today_prices.get(info["target"], {}).get("Close", old["Entry_Price"])
-                
-                print(f"[{current_date.strftime('%Y-%m-%d')}] MERGER: {qty} {legacy} -> {new_qty:.2f} {info['target']} (Ratio: {info.get('ratio')})")
-                
-                # Record in transactions
-                transactions.append({
-                    "Date": current_date.strftime("%d-%b-%Y"),
-                    "Stock": legacy,
-                    "Action": "MERGER_SWAP",
-                    "Qty": qty,
-                    "Price": info.get("ratio", 1.0),
-                    "Total_Amount": new_qty, 
-                    "Cash_In_Hand": cash,
-                    "Profit_Loss": 0,
-                    "Gain_Loss_Pct": 0,
-                    "Portfolio_Value": 0, # Calculated later
-                    "Reason": f"Swapped {qty} {legacy} into {new_qty:.2f} {info['target']}"
-                })
-
-                portfolio[info["target"]] = {
-                    "Qty": new_qty,
-                    "Entry_Price": price_today,
-                    "Max_Price": price_today,
-                    "Buy_Date": current_date,
-                }
-                del portfolio[legacy]
-
-            # update tradable universe
-            if legacy in all_stocks:
-                all_stocks.remove(legacy)
-            if info["target"] not in all_stocks:
-                if info["target"] in market_data:
-                    all_stocks.append(info["target"])
-                else:
-                    print(f"Warning: merge target {info['target']} not loaded; add its CSV to continue trading after merge.")
-
-# Moving Averages (Super Fast Trend)
+# Moving Averages
 SMA_FAST = 10
 SMA_SLOW = 30
 
-# Track last sell dates for 4-day gap
+# Track last sell dates
 last_sell_dates = {}
 
-# LOAD DATA
-print("Loading initial investment data...")
-
-# Load Initial Portfolio
+# --- LOAD INITIAL PORTFOLIO ---
+portfolio = {}
 try:
     initial_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
-    portfolio = {}
     for _, row in initial_df.iterrows():
         stock = row["Stock"]
         portfolio[stock] = {
@@ -98,10 +45,10 @@ try:
         }
     initial_invested = initial_df["Invested_Amount"].sum()
 except FileNotFoundError:
-    print(f"Error: {INITIAL_INVESTMENT_FILE} not found. Please run pre_invest.py first.")
+    print(f"{INITIAL_INVESTMENT_FILE} not found")
     exit()
 
-# Load Initial Cash
+# Load cash
 try:
     with open(INITIAL_CASH_FILE, "r") as f:
         cash = float(f.read().strip())
@@ -111,235 +58,228 @@ except FileNotFoundError:
 initial_total_value = initial_invested + cash
 target_value = initial_total_value * 2
 
-print(f"Initial Portfolio Value: {initial_total_value:,.2f}")
-print(f"Target Value (Double):   {target_value:,.2f}")
-
-# Load Market Data
-print("Loading stock market data...")
+# --- LOAD MARKET DATA ---
 market_data = {}
 all_stocks = []
 
 for file in os.listdir(DATA_DIR):
     if not file.endswith(".csv"):
         continue
-    
-    stock_name = file.replace(".csv", "")
-    file_path = os.path.join(DATA_DIR, file)
-    
-    try:
-        df = pd.read_csv(file_path)
-        if "published_date" not in df.columns or "close" not in df.columns:
-            continue
+    stock_name = file.replace(".csv","")
+    df = pd.read_csv(os.path.join(DATA_DIR,file))
+    if "published_date" not in df.columns or "close" not in df.columns:
+        continue
+    df["published_date"] = pd.to_datetime(df["published_date"])
+    df = df.sort_values("published_date").drop_duplicates("published_date").set_index("published_date")
+    df["SMA_FAST"] = df["close"].rolling(SMA_FAST).mean()
+    df["SMA_SLOW"] = df["close"].rolling(SMA_SLOW).mean()
+    df = df[df.index >= (START_DATE - pd.Timedelta(days=365))]
+    market_data[stock_name] = df
+    all_stocks.append(stock_name)
+
+# --- MERGER FUNCTION (Fixed) ---
+def apply_mergers(current_date, today_prices, transactions, cash, portfolio):
+    for legacy, info in MERGERS.items():
+        if current_date >= info["date"]:
+            if legacy in portfolio:
+                old = portfolio[legacy]
+                qty = old["Qty"]
+                new_qty = qty * info.get("ratio",1.0)
+                price_today = today_prices.get(info["target"], {}).get("Close", old["Entry_Price"])
+                
+                # Calculate total portfolio snapshot for logging
+                other_stocks_val = sum(
+                    portfolio[s]["Qty"] * today_prices.get(s, {}).get("Close", portfolio[s]["Entry_Price"])
+                    for s in portfolio if s != legacy
+                )
+                
+                # Record swap
+                transactions.append({
+                    "Date": current_date.strftime("%d-%b-%Y"),
+                    "Stock": legacy,
+                    "Action": "MERGER_SWAP",
+                    "Qty": qty,
+                    "Price": price_today, 
+                    "Total_Amount": new_qty * price_today,
+                    "Cash_In_Hand": cash,
+                    "Profit_Loss": 0,
+                    "Gain_Loss_Pct": 0,
+                    "Portfolio_Value": round(cash + other_stocks_val + (new_qty * price_today), 2),
+                    "Reason": f"Swapped {qty} {legacy} into {new_qty:.2f} {info['target']}"
+                })
+                
+                ratio = info.get("ratio", 1.0)
+                if info["target"] in portfolio:
+                    existing = portfolio[info["target"]]
+                    total_qty = existing["Qty"] + new_qty
+                    # Weighted average for entry price (adjusted for ratio)
+                    legacy_value = (old["Entry_Price"] / ratio) * new_qty
+                    existing_value = existing["Entry_Price"] * existing["Qty"]
+                    avg_entry = (legacy_value + existing_value) / total_qty
+                    portfolio[info["target"]] = {
+                        "Qty": total_qty,
+                        "Entry_Price": avg_entry,
+                        "Max_Price": max(existing["Max_Price"], price_today),
+                        "Buy_Date": current_date,
+                        "Is_Merged": True
+                    }
+                    print(f"          Merged {qty} {legacy} into existing {existing['Qty']} {info['target']}. New Total: {total_qty:.2f}")
+                else:
+                    portfolio[info["target"]] = {
+                        "Qty": new_qty,
+                        "Entry_Price": old["Entry_Price"] / ratio, # Adjusted cost basis
+                        "Max_Price": price_today,
+                        "Buy_Date": current_date,
+                        "Is_Merged": True
+                    }
+                    print(f"          Converted {qty} {legacy} into {new_qty:.2f} {info['target']}")
+                del portfolio[legacy]
             
-        df["published_date"] = pd.to_datetime(df["published_date"])
-        df = df.sort_values("published_date").drop_duplicates("published_date").set_index("published_date")        
-        
-        # Calculate Indicators
-        df["SMA_FAST"] = df["close"].rolling(window=SMA_FAST).mean()
-        df["SMA_SLOW"] = df["close"].rolling(window=SMA_SLOW).mean()
-        
-        # Filter for simulation period (with some buffer for SMA)
-        mask = df.index >= (START_DATE - pd.Timedelta(days=365))
-        df = df[mask]
-        
-        market_data[stock_name] = df
-        all_stocks.append(stock_name)
-        
-    except Exception as e:
-        print(f"Skipping {stock_name}: {e}")
+            # Update tradable universe
+            if legacy in all_stocks:
+                all_stocks.remove(legacy)
+            if info["target"] not in all_stocks and info["target"] in market_data:
+                all_stocks.append(info["target"])
 
-print(f"Loaded data for {len(market_data)} stocks.")
-
-# SIMULATION LOOP
-print("Starting simulation...")
-
+# --- SIMULATION LOOP ---
 dates = pd.date_range(START_DATE, END_DATE, freq='D')
 transactions = []
 daily_stats = []
 
 for current_date in dates:
-    # 1. Update Portfolio Value & Check Exists
     current_portfolio_value = 0
-    
-    # Pre-fetch prices for valid stocks today
-    today_prices = {}
-    
-    for stock in all_stocks:
-        df = market_data[stock]
-        if current_date in df.index:
-            today_prices[stock] = {
-                "Close": df.loc[current_date]["close"],
-                "SMA_FAST": df.loc[current_date]["SMA_FAST"],
-                "SMA_SLOW": df.loc[current_date]["SMA_SLOW"]
-            }
+    today_prices = {s:{
+        "Close": market_data[s].loc[current_date]["close"],
+        "SMA_FAST": market_data[s].loc[current_date]["SMA_FAST"],
+        "SMA_SLOW": market_data[s].loc[current_date]["SMA_SLOW"]
+    } for s in all_stocks if current_date in market_data[s].index}
     
     if not today_prices:
-        continue # Weekend or Holiday
+        continue
 
-    # check for any corporate mergers and convert holdings / universe
-    apply_mergers(current_date, today_prices, transactions, cash)
-        
-    # Calculate Equity
+    apply_mergers(current_date, today_prices, transactions, cash, portfolio)
+
+    # Update portfolio values
     for stock, data in portfolio.items():
         if stock in today_prices:
             price = today_prices[stock]["Close"]
             current_portfolio_value += data["Qty"] * price
-            
-            # Update Max Price for Trailing Stop
             if price > data["Max_Price"]:
                 portfolio[stock]["Max_Price"] = price
 
     total_equity = cash + current_portfolio_value
-    
-    # Log Daily Stats
-    daily_stats.append({
-        "Date": current_date,
-        "Total_Equity": total_equity,
-        "Cash": cash
-    })
+    daily_stats.append({"Date":current_date,"Total_Equity":total_equity,"Cash":cash})
 
-    # STRATEGY EXECUTION    
-    # 2. SELL LOGIC (Trailing Stop & Take Profit & 4-Day Gap PER STOCK)
+    # --- SELL LOGIC ---
     positions_to_sell = []
-    
     for stock, data in portfolio.items():
         if stock not in today_prices:
             continue
-            
-        # 4-Day Gap condition (per stock)
-        if (current_date - data["Buy_Date"]).days < 4:
+        lock_days = MERGER_LOCK_DAYS if data.get("Is_Merged", False) else REGULAR_LOCK_DAYS
+        if (current_date - data["Buy_Date"]).days < lock_days:
             continue
 
+        if data.get("Is_Merged", False) and (current_date - data["Buy_Date"]).days >= MERGER_LOCK_DAYS:
+            portfolio[stock]["Is_Merged"] = False
+
         current_price = today_prices[stock]["Close"]
-        max_price = data["Max_Price"]
-        entry_price = data["Entry_Price"]
-        
-        # Conditions
-        stop_price = max_price * (1 - TRAILING_STOP_PCT)
-        take_profit_price = entry_price * (1 + PROFIT_TAKE_PCT)
-        
-        reason = ""
+        stop_price = data["Max_Price"]*(1-TRAILING_STOP_PCT)
+        take_profit_price = data["Entry_Price"]*(1+PROFIT_TAKE_PCT)
+        reason=""
         if current_price < stop_price:
-            reason = f"Trailing Stop ({TRAILING_STOP_PCT*100:.0f}% drop)"
+            reason=f"Trailing Stop ({TRAILING_STOP_PCT*100:.0f}% drop)"
         elif current_price >= take_profit_price:
-            reason = f"Take Profit ({PROFIT_TAKE_PCT*100:.0f}% gain)"
-            
+            reason=f"Take Profit ({PROFIT_TAKE_PCT*100:.0f}% gain)"
         if reason:
             positions_to_sell.append((stock, reason))
-    
+
     for stock, reason in positions_to_sell:
         price = today_prices[stock]["Close"]
         qty = portfolio[stock]["Qty"]
         entry_price = portfolio[stock]["Entry_Price"]
-        
         revenue = qty * price
         cost = qty * entry_price
         pnl = revenue - cost
-        gain_loss_pct = (pnl / cost) * 100 if cost > 0 else 0
-        
+        gain_loss_pct = (pnl/cost)*100 if cost>0 else 0
         cash += revenue
         last_sell_dates[stock] = current_date
         del portfolio[stock]
-        
-        # Update current equity for report column
         current_portfolio_value -= revenue
-        
         transactions.append({
             "Date": current_date.strftime("%d-%b-%Y"),
             "Stock": stock,
             "Action": "SELL",
             "Qty": qty,
-            "Price": round(price, 2),
-            "Total_Amount": round(revenue, 2),
-            "Cash_In_Hand": round(cash, 2),
-            "Profit_Loss": round(pnl, 2),
+            "Price": round(price,2),
+            "Total_Amount": round(revenue,2),
+            "Cash_In_Hand": round(cash,2),
+            "Profit_Loss": round(pnl,2),
             "Gain_Loss_Pct": f"{gain_loss_pct:.2f}%",
-            "Portfolio_Value": round(cash + current_portfolio_value, 2),
+            "Portfolio_Value": round(cash + current_portfolio_value,2),
             "Reason": reason
         })
 
-    # 3. BUY LOGIC (Trend Strength Sorting + 4-Day Gap PER STOCK)
-    if cash > 1000:
-        potential_buys = []
-        
+    # --- BUY LOGIC ---
+    if cash>1000:
+        potential_buys=[]
         for stock in all_stocks:
             if stock in portfolio:
                 continue
-            
-            # 4-Day Gap condition per stock
-            if stock in last_sell_dates and (current_date - last_sell_dates[stock]).days < 4:
+            if stock in last_sell_dates and (current_date - last_sell_dates[stock]).days < REGULAR_LOCK_DAYS:
                 continue
-            
             if stock not in today_prices:
                 continue
-                
             price = today_prices[stock]["Close"]
-            sma_fast = today_prices[stock]["SMA_FAST"] 
-            sma_slow = today_prices[stock]["SMA_SLOW"] 
-            
+            sma_fast = today_prices[stock]["SMA_FAST"]
+            sma_slow = today_prices[stock]["SMA_SLOW"]
             if pd.notna(sma_fast) and pd.notna(sma_slow):
-                if price > sma_fast and sma_fast > sma_slow:
-                     # Calculate Trend Strength
-                     strength = (price - sma_slow) / sma_slow
-                     potential_buys.append((stock, strength))
-        
-        # Sort potential buys by Trend Strength (Descending)
-        potential_buys.sort(key=lambda x: x[1], reverse=True)
-        
+                if price>sma_fast and sma_fast>sma_slow:
+                    strength = (price - sma_slow)/sma_slow
+                    potential_buys.append((stock,strength))
+        potential_buys.sort(key=lambda x:x[1], reverse=True)
         if potential_buys:
             for target_stock, strength in potential_buys:
                 price = today_prices[target_stock]["Close"]
-                
-                # Position Sizing (5% per stock)
                 max_allocation = total_equity * MAX_POSITION_PCT
                 invest_amount = min(cash, max_allocation)
-                
                 qty_to_buy = int(invest_amount // price)
-                
                 if qty_to_buy >= MIN_SHARES:
-                    cost = qty_to_buy * price
+                    cost = qty_to_buy*price
                     cash -= cost
-                    
-                    portfolio[target_stock] = {
-                        "Qty": qty_to_buy,
-                        "Entry_Price": price,
-                        "Max_Price": price,
-                        "Buy_Date": current_date
-                    }
-                    
+                    portfolio[target_stock] = {"Qty":qty_to_buy,"Entry_Price":price,"Max_Price":price,"Buy_Date":current_date}
+                    current_portfolio_value += cost
                     transactions.append({
                         "Date": current_date.strftime("%d-%b-%Y"),
                         "Stock": target_stock,
                         "Action": "BUY",
                         "Qty": qty_to_buy,
-                        "Price": round(price, 2),
-                        "Total_Amount": round(-cost, 2),
-                        "Cash_In_Hand": round(cash, 2),
-                        "Profit_Loss": 0,
-                        "Gain_Loss_Pct": "0.00%",
-                        "Portfolio_Value": round(cash + (current_portfolio_value + cost), 2),
-                        "Reason": f"Trend Entry (Str: {strength:.2f})"
+                        "Price": round(price,2),
+                        "Total_Amount": round(-cost,2),
+                        "Cash_In_Hand": round(cash,2),
+                        "Profit_Loss":0,
+                        "Gain_Loss_Pct":"0.00%",
+                        "Portfolio_Value": round(cash+current_portfolio_value,2),
+                        "Reason": f"Trend Entry (Str:{strength:.2f})"
                     })
-                    
-                    current_portfolio_value += cost
 
-# FINAL SUMMARY & REPORT GENERATION
-print("\nSimulation Complete.")
-
-# 1. Calculate Final Stats
+# --- FINAL REPORTS ---
 final_portfolio_val = 0
 for stock, data in portfolio.items():
+    # Use price at END_DATE or last available in sim range
     if stock in market_data:
-        last_price = market_data[stock].iloc[-1]["close"]
+        sim_range_prices = market_data[stock][market_data[stock].index <= END_DATE]
+        if not sim_range_prices.empty:
+            price = sim_range_prices.iloc[-1]["close"]
+        else:
+            price = data["Entry_Price"]
     else:
-        last_price = data["Entry_Price"]
-    final_portfolio_val += data["Qty"] * last_price
+        price = data["Entry_Price"]
+    final_portfolio_val += data["Qty"] * price
 
 final_total_equity = cash + final_portfolio_val
 total_profit = final_total_equity - initial_total_value
-profit_pct = (total_profit / initial_total_value) * 100 if initial_total_value > 0 else 0
+profit_pct = (total_profit/initial_total_value)*100 if initial_total_value>0 else 0
 
-# Console Output
 print("="*30)
 print("FINAL RESULTS")
 print("="*30)
@@ -349,31 +289,35 @@ print(f"Total Profit:        {total_profit:,.2f}")
 print(f"Return (%):          {profit_pct:.2f}%")
 print("="*30)
 
-# 2. Generate Portfolio Comparison Report
+# 1. Generate Portfolio Comparison Report
 try:
-    initial_comp_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
     comparison_records = []
-    
-    # Track stocks we've already added to avoid duplicates
     added_stocks = set()
     
-    # 1. Add stocks from initial investment
-    for _, row in initial_comp_df.iterrows():
+    # Add stocks from initial investment
+    for _, row in initial_df.iterrows():
         stock = row["Stock"]
         added_stocks.add(stock)
+        
+        # Get current price within simulation range
+        cur_price = 0
+        if stock in market_data:
+            sim_range = market_data[stock][market_data[stock].index <= END_DATE]
+            if not sim_range.empty:
+                cur_price = sim_range.iloc[-1]["close"]
+                
         if stock in portfolio:
             cur_qty = portfolio[stock]["Qty"]
-            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else portfolio[stock]["Entry_Price"]
+            # If we don't have a market price, use entry price
+            if cur_price == 0: cur_price = portfolio[stock]["Entry_Price"]
             cur_val = cur_qty * cur_price
         else:
             cur_qty = 0
-            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
             cur_val = 0
             
-        formatted_date = pd.to_datetime(row["Buy_Date"]).strftime("%d-%b-%Y") if row["Buy_Date"] != "-" else "-"
         comparison_records.append({
             "Stock": stock,
-            "Initial_Buy_Date": formatted_date,
+            "Initial_Buy_Date": pd.to_datetime(row["Buy_Date"]).strftime("%d-%b-%Y") if pd.notna(row["Buy_Date"]) else "-",
             "Initial_Qty": row["Quantity"],
             "Initial_Price": row["Buy_Price"],
             "Initial_Value": row["Invested_Amount"],
@@ -382,11 +326,17 @@ try:
             "Current_Value": round(cur_val, 2)
         })
         
-    # 2. Add new stocks acquired during simulation
+    # Add new stocks acquired during simulation
     for stock, data in portfolio.items():
         if stock not in added_stocks:
             cur_qty = data["Qty"]
-            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else data["Entry_Price"]
+            cur_price = 0
+            if stock in market_data:
+                sim_range = market_data[stock][market_data[stock].index <= END_DATE]
+                if not sim_range.empty:
+                    cur_price = sim_range.iloc[-1]["close"]
+            
+            if cur_price == 0: cur_price = data["Entry_Price"]
             cur_val = cur_qty * cur_price
             
             comparison_records.append({
@@ -400,13 +350,13 @@ try:
                 "Current_Value": round(cur_val, 2)
             })
             
-    # 3. Add Cash In Hand
+    # Add Cash In Hand
     comparison_records.append({
         "Stock": "CASH",
         "Initial_Buy_Date": "-",
         "Initial_Qty": 0,
         "Initial_Price": 0,
-        "Initial_Value": 0, # Could technically put initial cash here if tracked
+        "Initial_Value": 0,
         "Current_Qty": 0,
         "Current_Price": 0,
         "Current_Value": round(cash, 2)
@@ -419,41 +369,42 @@ try:
         "Stock": "TOTAL",
         "Initial_Buy_Date": "-",
         "Initial_Qty": comp_df["Initial_Qty"].sum(),
-        "Initial_Price": round(comp_df["Initial_Price"].sum(), 2),
+        "Initial_Price": "-",
         "Initial_Value": round(comp_df["Initial_Value"].sum(), 2),
         "Current_Qty": comp_df["Current_Qty"].sum(),
-        "Current_Price": round(comp_df["Current_Price"].sum(), 2),
+        "Current_Price": "-",
         "Current_Value": round(comp_df["Current_Value"].sum(), 2)
     }
     comp_df = pd.concat([comp_df, pd.DataFrame([totals])], ignore_index=True)
     
-    comparison_file = "portfolio_comparison.csv"
-    comp_df.to_csv(comparison_file, index=False)
-    print(f"Comparison report written: {comparison_file}")
+    comp_df.to_csv("portfolio_comparison.csv", index=False)
+    print(f"Comparison report written: portfolio_comparison.csv")
 except Exception as e:
     print(f"Failed to generate comparison report: {e}")
 
-# 3. Write Summary to TXT
-summary_file = "trading_summary.txt"
-with open(summary_file, "w") as f:
-    f.write("=" * 35 + "\n")
-    f.write("       TRADING SIMULATION RESULTS\n")
-    f.write("=" * 35 + "\n")
-    f.write(f"Initial Investment : {initial_total_value:>12,.2f}\n")
-    f.write(f"Final Value        : {final_total_equity:>12,.2f}\n")
-    f.write(f"Total Profit       : {total_profit:>12,.2f}\n")
-    f.write(f"Return (%)         : {profit_pct:>11.2f}%\n")
-    f.write("=" * 35 + "\n")
+# 2. Write Summary to TXT
+try:
+    summary_file = "trading_summary.txt"
+    with open(summary_file, "w") as f:
+        f.write("=" * 35 + "\n")
+        f.write("       TRADING SIMULATION RESULTS\n")
+        f.write("=" * 35 + "\n")
+        f.write(f"Initial Investment : {initial_total_value:>12,.2f}\n")
+        f.write(f"Final Value        : {final_total_equity:>12,.2f}\n")
+        f.write(f"Total Profit       : {total_profit:>12,.2f}\n")
+        f.write(f"Return (%)         : {profit_pct:>11.2f}%\n")
+        f.write("=" * 35 + "\n")
+except Exception as e:
+    print(f"Failed to write summary TXT: {e}")
 
-# 4. Write Trade History CSV
-report_file = "trading_report.csv"
+# 3. Write Trade History CSV
 if transactions:
     df_trades = pd.DataFrame(transactions)
-    cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
-    df_trades = df_trades[cols]
-    df_trades.to_csv(report_file, index=False)
+    # Ensure correct column order if possible
+    expected_cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
+    cols_to_use = [c for c in expected_cols if c in df_trades.columns]
+    df_trades[cols_to_use].to_csv("trading_report.csv", index=False)
 else:
-    pd.DataFrame(columns=["Date","Stock","Action","Qty","Price","Total_Amount","Cash_In_Hand","Profit_Loss","Gain_Loss_Pct","Portfolio_Value","Reason"]).to_csv(report_file, index=False)
+    pd.DataFrame().to_csv("trading_report.csv", index=False)
 
-print(f"Trade history written: {report_file}")
-print("All files generated successfully.")
+print("All reports generated successfully.")

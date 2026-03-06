@@ -2,7 +2,7 @@
        TRADING SIMULATION RESULTS
 ===================================
 Initial Investment :   200,000.00
-Final Value        :   732,349.42
-Total Profit       :   532,349.42
-Return (%)         :      266.17%
+Final Value        :   770,214.97
+Total Profit       :   570,214.97
+Return (%)         :      285.11%
 ===================================
