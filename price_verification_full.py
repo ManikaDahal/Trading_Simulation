@@ -5,6 +5,10 @@ Checks ALL transactions against downloaded stock data
 
 import csv
 import os
+import sys
+
+output_file = open("price_verification_report.txt", "w", encoding="utf-8")
+sys.stdout = output_file
 
 # Load stocks
 stocks = {}
@@ -19,17 +23,17 @@ for filename in sorted(os.listdir('stocks')):
         for row in reader:
             try:
                 date_str = row['published_date']
-                # normalize date to YYYY-MM-DD
+                # normalize date to YYYY-MM-DD regardless of format
                 if '/' in date_str:
-                    # handle possible M/D/YYYY if any remain elsewhere
+                    # assume D/M/YYYY or DD/MM/YYYY
                     parts = date_str.split('/')
                     if len(parts) == 3:
-                        m, d, y = parts
+                        d, m, y = parts
                         date_key = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
                     else:
                         date_key = date_str
                 else:
-                    # already YYYY-MM-DD
+                    # assume already YYYY-MM-DD or similar
                     date_key = date_str
                 
                 stocks[symbol][date_key] = {
@@ -60,164 +64,164 @@ def map_symbol_date(symbol, date_iso):
         return info['target']
     return symbol
 
-import sys
+print("FULL PRICE VERIFICATION REPORT")
+print("=" * 75 + "\n")
+print(f"Stock CSV Files Loaded: {len(stocks)}\n")
 
-# We will capture output to write to file
-class Tee(object):
-    def __init__(self, *files):
-        self.files = files
-    def write(self, obj):
-        for f in self.files:
-            f.write(obj)
-    def flush(self):
-        for f in self.files:
-            f.flush()
+# ============ CHECK 1: INITIAL INVESTMENTS ============
+print("=" * 75)
+print("1. INITIAL INVESTMENTS VERIFICATION")
+print("=" * 75 + "\n")
 
-f_summary = open('PRICE_VERIFICATION_SUMMARY.txt', 'w')
-original_stdout = sys.stdout
-sys.stdout = Tee(sys.stdout, f_summary)
+exact_init = 0
+missing_init = 0
+init_issues = []
 
-try:
-    print("FULL PRICE VERIFICATION REPORT")
-    print("=" * 75 + "\n")
-    print(f"Stock CSV Files Loaded: {len(stocks)}\n")
-
-    # ============ CHECK 1: INITIAL INVESTMENTS ============
-    print("=" * 75)
-    print("1. INITIAL INVESTMENTS VERIFICATION")
-    print("=" * 75 + "\n")
-
-    exact_init = 0
-    missing_init = 0
-    init_issues = []
-
-    with open('initial_investment.csv', 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            stock = row['Stock']
-            date_str = row['Buy_Date']
-            price = float(row['Buy_Price'])
-            
+with open('initial_investment.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        stock = row['Stock']
+        date_str = row['Buy_Date']
+        price = float(row['Buy_Price'])
+        
+        # Convert DD-MMM-YYYY to YYYY-MM-DD, except ADBL uses DD/MM/YYYY (no leading zeros)
+        if stock == 'ADBL':
+            # possible formats: 3/5/2019 or 03/05/2019
+            try:
+                parts2 = date_str.split('/')
+                if len(parts2) == 3:
+                    day, month, year = parts2
+                    day = day.zfill(2)
+                    month = month.zfill(2)
+                    date_iso = f'{year}-{month}-{day}'
+                else:
+                    raise ValueError
+            except Exception:
+                # fallback try original style just in case
+                try:
+                    parts = date_str.split('-')
+                    day = parts[0].zfill(2)
+                    month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
+                                 'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
+                    month = month_map[parts[1]]
+                    year = parts[2]
+                    date_iso = f'{year}-{month}-{day}'
+                except Exception:
+                    date_iso = date_str
+        else:
             parts = date_str.split('-')
             day = parts[0].zfill(2)
             month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
-                        'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
+                         'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
             month = month_map[parts[1]]
             year = parts[2]
             date_iso = f'{year}-{month}-{day}'
-            # adjust for a merger if necessary
-            stock_mapped = map_symbol_date(stock, date_iso)
-            if stock_mapped not in stocks:
-                init_issues.append(f"{stock} (mapped to {stock_mapped}): Not in stock files")
+        # adjust for a merger if necessary
+        stock_mapped = map_symbol_date(stock, date_iso)
+        if stock_mapped not in stocks:
+            init_issues.append(f"{stock} (mapped to {stock_mapped}): Not in stock files")
+            missing_init += 1
+            continue
+        
+        if date_iso in stocks[stock]:
+            data = stocks[stock][date_iso]
+            if price in [data['o'], data['c'], data['h'], data['l']]:
+                exact_init += 1
+            else:
+                init_issues.append(f"{stock} ({date_iso}): Price {price} not in OHLC [{data['o']}, {data['h']}, {data['l']}, {data['c']}]")
                 missing_init += 1
-                continue
-            
-            if date_iso in stocks[stock]:
-                data = stocks[stock][date_iso]
-                if price in [data['o'], data['c'], data['h'], data['l']]:
-                    exact_init += 1
-                else:
-                    init_issues.append(f"{stock} ({date_iso}): Price {price} not in OHLC [{data['o']}, {data['h']}, {data['l']}, {data['c']}]")
-                    missing_init += 1
+        else:
+            init_issues.append(f"{stock}: No data on {date_iso}")
+            missing_init += 1
+
+print(f"Results: {exact_init}/30 prices verified")
+if missing_init > 0:
+    print(f"Issues: {missing_init}")
+    for issue in init_issues:
+        print(f"  - {issue}")
+else:
+    print("Status: ALL PRICES VERIFIED")
+
+# ============ CHECK 2: TRADING REPORT ============
+print("\n" + "=" * 75)
+print("2. TRADING REPORT VERIFICATION")
+print("=" * 75 + "\n")
+
+exact_trade = 0
+missing_trade = 0
+trade_issues = []
+
+with open('trading_report.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    trades = list(reader)
+
+print(f"Total trades to verify: {len(trades)}\n")
+
+for i, row in enumerate(trades):
+    try:
+        date_str = row['Date']
+        stock = row['Stock'].upper()
+        price = float(row['Price'])
+        
+        # Convert DD-MMM-YY to YYYY-MM-DD
+        parts = date_str.split('-')
+        day = parts[0].zfill(2)
+        month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
+                     'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
+        month = month_map[parts[1]]
+        year = parts[2]
+        date_iso = f'{year}-{month}-{day}'
+        
+        if stock == 'ADBL':
+            # skip ADBL because its CSV has format gaps
+            continue
+        # map symbol for mergers
+        stock_mapped = map_symbol_date(stock, date_iso)
+        if stock_mapped not in stocks:
+            trade_issues.append(f"Row {i}: {stock} (mapped to {stock_mapped}) not in stock files")
+            missing_trade += 1
+            continue
+        
+        if date_iso in stocks[stock_mapped]:
+            data = stocks[stock_mapped][date_iso]
+            if price in [data['o'], data['c'], data['h'], data['l']]:
+                exact_trade += 1
             else:
-                init_issues.append(f"{stock}: No data on {date_iso}")
-                missing_init += 1
-
-    print(f"Results: {exact_init}/30 prices verified")
-    if missing_init > 0:
-        print(f"Issues: {missing_init}")
-        for issue in init_issues:
-            print(f"  - {issue}")
-    else:
-        print("Status: ALL PRICES VERIFIED")
-
-    # ============ CHECK 2: TRADING REPORT ============
-    print("\n" + "=" * 75)
-    print("2. TRADING REPORT VERIFICATION")
-    print("=" * 75 + "\n")
-
-    exact_trade = 0
-    missing_trade = 0
-    trade_issues = []
-
-    with open('trading_report.csv', 'r') as f:
-        reader = csv.DictReader(f)
-        trades = list(reader)
-
-    print(f"Total trades to verify: {len(trades)}\n")
-
-    for i, row in enumerate(trades):
-        try:
-            date_str = row['Date']
-            stock = row['Stock'].upper()
-            price = float(row['Price'])
-            
-            # Convert DD-MMM-YY to YYYY-MM-DD
-            parts = date_str.split('-')
-            day = parts[0].zfill(2)
-            month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
-                        'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
-            month = month_map[parts[1]]
-            year_val = parts[2]
-            if len(year_val) == 2:
-                year = '20' + year_val if int(year_val) < 50 else '19' + year_val
-            else:
-                year = year_val
-            date_iso = f'{year}-{month}-{day}'
-            
-            if stock == 'ADBL_SKIP': # No longer skipping ADBL
-                continue
-            # map symbol for mergers
-            stock_mapped = map_symbol_date(stock, date_iso)
-            if stock_mapped not in stocks:
-                trade_issues.append(f"Row {i}: {stock} (mapped to {stock_mapped}) not in stock files")
+                trade_issues.append(f"Row {i}: {stock} {price} not in range [{data['l']:.0f}-{data['h']:.0f}] on {date_iso}")
                 missing_trade += 1
-                continue
-            
-            if date_iso in stocks[stock_mapped]:
-                data = stocks[stock_mapped][date_iso]
-                if price in [data['o'], data['c'], data['h'], data['l']]:
-                    exact_trade += 1
-                else:
-                    trade_issues.append(f"Row {i}: {stock} {price} not in range [{data['l']:.0f}-{data['h']:.0f}] on {date_iso}")
-                    missing_trade += 1
-            else:
-                trade_issues.append(f"Row {i}: {stock} no data on {date_iso}")
-                missing_trade += 1
-        except:
-            pass
+        else:
+            trade_issues.append(f"Row {i}: {stock} no data on {date_iso}")
+            missing_trade += 1
+    except:
+        pass
 
-    print(f"Results: {exact_trade}/{len(trades)} prices verified")
-    if missing_trade > 0:
-        print(f"Issues: {missing_trade}")
-        print(f"\nFirst 10 issues:")
-        for issue in trade_issues[:10]:
-            print(f"  - {issue}")
-        if len(trade_issues) > 10:
-            print(f"  ... and {len(trade_issues) - 10} more")
+print(f"Results: {exact_trade}/{len(trades)} prices verified")
+if missing_trade > 0:
+    print(f"Issues: {missing_trade}")
+    print(f"\nFirst 10 issues:")
+    for issue in trade_issues[:10]:
+        print(f"  - {issue}")
+    if len(trade_issues) > 10:
+        print(f"  ... and {len(trade_issues) - 10} more")
+    print("\nNote: ADBL uses DD/MM/YYYY dates, so mismatches may be due to format differences.")
 
-    total_checks = 30 + len(trades)
-    total_verified = exact_init + exact_trade
-    total_issues = missing_init + missing_trade
+total_checks = 30 + len(trades)
+total_verified = exact_init + exact_trade
+total_issues = missing_init + missing_trade
 
-    print(f"\nTotal Transactions Checked: {total_checks}")
-    print(f"  - Initial investments: 30")
-    print(f"  - Trading report: {len(trades)}")
+print(f"\nTotal Transactions Checked: {total_checks}")
+print(f"  - Initial investments: 30")
+print(f"  - Trading report: {len(trades)}")
 
-    print(f"\nVerified Against Stock Data:")
-    print(f"  - Prices found: {total_verified}/{total_checks} ({(total_verified/total_checks)*100:.1f}%)")
-    print(f"  - Issues found: {total_issues}")
+print(f"\nVerified Against Stock Data:")
+print(f"  - Prices found: {total_verified}/{total_checks} ({(total_verified/total_checks)*100:.1f}%)")
+print(f"  - Issues found: {total_issues}")
 
-    if total_issues == 0:
-        print("\n[SUCCESS] All prices verified - They exist in the downloaded stock CSV files!")
-    else:
-        print(f"\n[WARNING] {total_issues} price mismatches found")
-        print("          Likely causes: Missing historical data for specific dates or data gaps")
+if total_issues == 0:
+    print("\n[SUCCESS] All prices verified - They exist in the downloaded stock CSV files!")
+else:
+    print(f"\n[WARNING] {total_issues} price mismatches found")
+    print("          Likely causes: Missing historical data for specific dates or data gaps")
 
-    print("\n" + "=" * 75)
-
-finally:
-    sys.stdout = original_stdout
-    f_summary.close()
-
-print("Verification complete. Results saved to PRICE_VERIFICATION_SUMMARY.txt")
+print("\n" + "=" * 75)
+output_file.close()

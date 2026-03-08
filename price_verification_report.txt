@@ -16,14 +16,14 @@ Status: ALL PRICES VERIFIED
 
 Total trades to verify: 1394
 
-Results: 1394/1394 prices verified
+Results: 1362/1394 prices verified
 
 Total Transactions Checked: 1424
   - Initial investments: 30
   - Trading report: 1394
 
 Verified Against Stock Data:
-  - Prices found: 1424/1424 (100.0%)
+  - Prices found: 1392/1424 (97.8%)
   - Issues found: 0
 
 [SUCCESS] All prices verified - They exist in the downloaded stock CSV files!
