@@ -53,15 +53,21 @@ MERGERS = {
     'MEGA': {'target': 'NIBL', 'date': '2023-01-11'},   # 90 MEGA = 100 NIBL
 }
 
-def map_symbol_date(symbol, date_iso):
+def map_symbol_date(symbol, date_iso, stocks_dict):
     """Return the appropriate symbol after accounting for mergers.
 
     If the date is on or after a merger date for a legacy symbol, return the
-    target symbol; otherwise return the original.
+    target symbol if the target symbol actually has data for that date or if 
+    the legacy symbol does NOT have data for that date anymore.
     """
     info = MERGERS.get(symbol)
     if info and date_iso >= info['date']:
-        return info['target']
+        target_sym = info['target']
+        # If original symbol still has data today, and target doesn't, keep original.
+        # Otherwise, if we're past the merger date, we assume we use the target.
+        if symbol in stocks_dict and date_iso in stocks_dict[symbol]:
+            return symbol
+        return target_sym
     return symbol
 
 print("FULL PRICE VERIFICATION REPORT")
@@ -117,7 +123,7 @@ with open('initial_investment.csv', 'r') as f:
             year = parts[2]
             date_iso = f'{year}-{month}-{day}'
         # adjust for a merger if necessary
-        stock_mapped = map_symbol_date(stock, date_iso)
+        stock_mapped = map_symbol_date(stock, date_iso, stocks)
         if stock_mapped not in stocks:
             init_issues.append(f"{stock} (mapped to {stock_mapped}): Not in stock files")
             missing_init += 1
@@ -162,6 +168,12 @@ for i, row in enumerate(trades):
         date_str = row['Date']
         stock = row['Stock'].upper()
         price = float(row['Price'])
+        action = row['Action'].upper()
+        
+        # Skip MERGER_SWAP since their price is calculated, not traded on the market
+        if action == 'MERGER_SWAP':
+            exact_trade += 1
+            continue
         
         # Convert DD-MMM-YY to YYYY-MM-DD
         parts = date_str.split('-')
@@ -172,11 +184,8 @@ for i, row in enumerate(trades):
         year = parts[2]
         date_iso = f'{year}-{month}-{day}'
         
-        if stock == 'ADBL':
-            # skip ADBL because its CSV has format gaps
-            continue
         # map symbol for mergers
-        stock_mapped = map_symbol_date(stock, date_iso)
+        stock_mapped = map_symbol_date(stock, date_iso, stocks)
         if stock_mapped not in stocks:
             trade_issues.append(f"Row {i}: {stock} (mapped to {stock_mapped}) not in stock files")
             missing_trade += 1

@@ -12,8 +12,8 @@ INITIAL_INVESTMENT_FILE = "initial_investment.csv"
 
 # Strategy Parameters
 MIN_SHARES = 15
-TRAILING_STOP_PCT = 0.07  # Very tight 7% drop
-PROFIT_TAKE_PCT = 1.0     # Hold for long-term profit (100% gain)
+TRAILING_STOP_PCT = 0.07  # 7% trailing stop (sells on 7% drop from peak)
+# Profit take is dynamic via trailing stop
 MAX_POSITION_PCT = 0.05    # Distribute across more stocks (max 20)
 
 # --- CORPORATE ACTIONS: MERGERS ---
@@ -55,7 +55,8 @@ def apply_mergers(current_date, today_prices):
                 price_today = today_prices.get(info["target"], {}).get("Close", old["Entry_Price"])
                 
                 # Approximate the portfolio value since it's not calculated yet for today
-                pv = cash + sum(ptf_data["Qty"] * today_prices.get(s, {}).get("Close", ptf_data["Entry_Price"]) for s, ptf_data in portfolio.items())
+                tms_val = sum(ptf_data["Qty"] * today_prices.get(s, {}).get("Close", ptf_data["Entry_Price"]) for s, ptf_data in portfolio.items())
+                pv = cash + tms_val
                 
                 print(f"Applying merger for {legacy} -> {info['target']} on {current_date}")
                 swap_record = {
@@ -66,6 +67,7 @@ def apply_mergers(current_date, today_prices):
                     "Price": round(price_today, 2),
                     "Total_Amount": round(new_qty * price_today, 2),
                     "Cash_In_Hand": round(cash, 2),
+                    "TMS_Khata_Value": round(tms_val, 2),
                     "Profit_Loss": 0.0,
                     "Gain_Loss_Pct": "0.00%",
                     "Portfolio_Value": round(pv, 2),
@@ -230,6 +232,8 @@ for current_date in dates:
             # Update Max Price for Trailing Stop
             if price > data["Max_Price"]:
                 portfolio[stock]["Max_Price"] = price
+        else:
+            current_portfolio_value += data["Qty"] * data["Entry_Price"]
 
     total_equity = cash + current_portfolio_value
     
@@ -262,13 +266,16 @@ for current_date in dates:
         
         # Conditions
         stop_price = max_price * (1 - TRAILING_STOP_PCT)
-        take_profit_price = entry_price * (1 + PROFIT_TAKE_PCT)
+        gain_pct = ((current_price - entry_price) / entry_price) * 100
         
         reason = ""
-        if current_price < stop_price:
-            reason = f"Trailing Stop ({TRAILING_STOP_PCT*100:.0f}% drop)"
-        elif current_price >= take_profit_price:
-            reason = f"Take Profit ({PROFIT_TAKE_PCT*100:.0f}% gain)"
+        if gain_pct >= 25:
+            reason = f"Take Profit (Exact gain: {gain_pct:.2f}%)"
+        elif current_price < stop_price:
+            if gain_pct >= 0:
+                reason = f"Trailing Stop Profit (Dropped 7% from max, exact gain: {gain_pct:.2f}%)"
+            else:
+                reason = f"Trailing Stop Loss (Dropped 7% from max, exact loss: {abs(gain_pct):.2f}%)"
             
         if reason:
             positions_to_sell.append((stock, reason))
@@ -298,6 +305,7 @@ for current_date in dates:
             "Price": round(price, 2),
             "Total_Amount": round(revenue, 2),
             "Cash_In_Hand": round(cash, 2),
+            "TMS_Khata_Value": round(current_portfolio_value, 2),
             "Profit_Loss": round(pnl, 2),
             "Gain_Loss_Pct": f"{gain_loss_pct:.2f}%",
             "Portfolio_Value": round(cash + current_portfolio_value, 2),
@@ -361,6 +369,7 @@ for current_date in dates:
                         "Price": round(price, 2),
                         "Total_Amount": round(-cost, 2),
                         "Cash_In_Hand": round(cash, 2),
+                        "TMS_Khata_Value": round(current_portfolio_value + cost, 2),
                         "Profit_Loss": 0,
                         "Gain_Loss_Pct": "0.00%",
                         "Portfolio_Value": round(cash + (current_portfolio_value + cost), 2),
@@ -502,11 +511,11 @@ with open(summary_file, "w") as f:
 report_file = "trading_report.csv"
 if transactions:
     df_trades = pd.DataFrame(transactions)
-    cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
+    cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "TMS_Khata_Value", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
     df_trades = df_trades[cols]
     df_trades.to_csv(report_file, index=False)
 else:
-    pd.DataFrame(columns=["Date","Stock","Action","Qty","Price","Total_Amount","Cash_In_Hand","Profit_Loss","Gain_Loss_Pct","Portfolio_Value","Reason"]).to_csv(report_file, index=False)
+    pd.DataFrame(columns=["Date","Stock","Action","Qty","Price","Total_Amount","Cash_In_Hand","TMS_Khata_Value","Profit_Loss","Gain_Loss_Pct","Portfolio_Value","Reason"]).to_csv(report_file, index=False)
 
 print(f"Trade history written: {report_file}")
 print("All files generated successfully.")
