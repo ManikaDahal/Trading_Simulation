@@ -269,13 +269,16 @@ for current_date in dates:
         gain_pct = ((current_price - entry_price) / entry_price) * 100
         
         reason = ""
-        if gain_pct >= 25:
-            reason = f"Take Profit (Exact gain: {gain_pct:.2f}%)"
-        elif current_price < stop_price:
-            if gain_pct >= 0:
-                reason = f"Trailing Stop Profit (Dropped 7% from max, exact gain: {gain_pct:.2f}%)"
+        if gain_pct >= 100:
+            reason = f"Take Profit (100% up) - exactly {gain_pct:.2f}% up"
+        elif gain_pct >= 25:
+            if gain_pct == 25:
+                reason = "Take Profit (25% up)"
             else:
-                reason = f"Trailing Stop Loss (Dropped 7% from max, exact loss: {abs(gain_pct):.2f}%)"
+                reason = f"Take Profit (25% up) - exactly {gain_pct:.2f}% up"
+        elif current_price < stop_price:
+            drop_pct = (1 - current_price / max_price) * 100
+            reason = f"Trailing Stop (7% drop) - exactly {drop_pct:.2f}% drop"
             
         if reason:
             positions_to_sell.append((stock, reason))
