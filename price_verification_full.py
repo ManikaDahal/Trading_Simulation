@@ -6,9 +6,31 @@ Checks ALL transactions against downloaded stock data
 import csv
 import os
 import sys
+from datetime import datetime
 
 output_file = open("price_verification_report.txt", "w", encoding="utf-8")
 sys.stdout = output_file
+
+def parse_date_to_iso(date_str):
+    try:
+        return datetime.strptime(date_str, "%b %d, %Y").strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+    
+    # Fallback to older formats
+    try:
+        if '/' in date_str:
+            parts = date_str.split('/')
+            return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+        elif '-' in date_str:
+            parts = date_str.split('-')
+            month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
+                         'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
+            return f"{parts[2]}-{month_map[parts[1]]}-{parts[0].zfill(2)}"
+    except Exception:
+        pass
+    
+    return date_str
 
 # Load stocks
 stocks = {}
@@ -90,38 +112,7 @@ with open('initial_investment.csv', 'r') as f:
         date_str = row['Buy_Date']
         price = float(row['Buy_Price'])
         
-        # Convert DD-MMM-YYYY to YYYY-MM-DD, except ADBL uses DD/MM/YYYY (no leading zeros)
-        if stock == 'ADBL':
-            # possible formats: 3/5/2019 or 03/05/2019
-            try:
-                parts2 = date_str.split('/')
-                if len(parts2) == 3:
-                    day, month, year = parts2
-                    day = day.zfill(2)
-                    month = month.zfill(2)
-                    date_iso = f'{year}-{month}-{day}'
-                else:
-                    raise ValueError
-            except Exception:
-                # fallback try original style just in case
-                try:
-                    parts = date_str.split('-')
-                    day = parts[0].zfill(2)
-                    month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
-                                 'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
-                    month = month_map[parts[1]]
-                    year = parts[2]
-                    date_iso = f'{year}-{month}-{day}'
-                except Exception:
-                    date_iso = date_str
-        else:
-            parts = date_str.split('-')
-            day = parts[0].zfill(2)
-            month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
-                         'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
-            month = month_map[parts[1]]
-            year = parts[2]
-            date_iso = f'{year}-{month}-{day}'
+        date_iso = parse_date_to_iso(date_str)
         # adjust for a merger if necessary
         stock_mapped = map_symbol_date(stock, date_iso, stocks)
         if stock_mapped not in stocks:
@@ -175,14 +166,8 @@ for i, row in enumerate(trades):
             exact_trade += 1
             continue
         
-        # Convert DD-MMM-YY to YYYY-MM-DD
-        parts = date_str.split('-')
-        day = parts[0].zfill(2)
-        month_map = {'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04', 'May': '05', 'Jun': '06',
-                     'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'}
-        month = month_map[parts[1]]
-        year = parts[2]
-        date_iso = f'{year}-{month}-{day}'
+        # Convert to YYYY-MM-DD
+        date_iso = parse_date_to_iso(date_str)
         
         # map symbol for mergers
         stock_mapped = map_symbol_date(stock, date_iso, stocks)
