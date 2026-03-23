@@ -3,12 +3,13 @@ import os
 
 DATA_DIR = "stocks"
 INITIAL_CAPITAL = 200000
-SEARCH_START_DATE = pd.to_datetime("2019-01-01")
-SEARCH_END_DATE = pd.to_datetime("2021-01-24")
+SEARCH_START_DATE = pd.to_datetime("2012-01-01")
+SEARCH_END_DATE = pd.to_datetime("2016-01-21")
 MIN_SHARES = 15
+SKIP_STOCKS = ["NIBL"]
 
 files = os.listdir(DATA_DIR)
-selected_files = files[:30]
+selected_files = [f for f in files if f.endswith(".csv") and f.replace(".csv", "") not in SKIP_STOCKS]
 
 stock_min_prices = []
 
@@ -91,7 +92,7 @@ else:
         })
         
     final_df = pd.DataFrame(records)
-    final_df["Buy_Date"] = pd.to_datetime(final_df["Buy_Date"]).dt.strftime("%d-%b-%Y")
+    final_df["Buy_Date"] = pd.to_datetime(final_df["Buy_Date"]).dt.strftime("%b %d, %Y")
     final_df.to_csv("initial_investment.csv", index=False)
     
     real_invested = final_df["Invested_Amount"].sum()

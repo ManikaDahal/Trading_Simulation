@@ -4,8 +4,8 @@ import numpy as np
 
 # CONFIGURATION
 DATA_DIR = "stocks"
-START_DATE = pd.to_datetime("2021-01-25")
-END_DATE = pd.to_datetime("2026-01-22")  
+START_DATE = pd.to_datetime("2016-01-22")
+END_DATE = pd.to_datetime("2026-01-21")
 
 INITIAL_CASH_FILE = "remaining_cash.txt"
 INITIAL_INVESTMENT_FILE = "initial_investment.csv"
@@ -60,7 +60,7 @@ def apply_mergers(current_date, today_prices):
                 
                 print(f"Applying merger for {legacy} -> {info['target']} on {current_date}")
                 swap_record = {
-                    "Date": current_date.strftime("%d-%b-%Y"),
+                    "Date": current_date.strftime("%b %d, %Y"),
                     "Stock": legacy,
                     "Action": "MERGER_SWAP",
                     "Qty": qty,
@@ -301,7 +301,7 @@ for current_date in dates:
         current_portfolio_value -= revenue
         
         transactions.append({
-            "Date": current_date.strftime("%d-%b-%Y"),
+            "Date": current_date.strftime("%b %d, %Y"),
             "Stock": stock,
             "Action": "SELL",
             "Qty": qty,
@@ -365,7 +365,7 @@ for current_date in dates:
                     }
                     
                     transactions.append({
-                        "Date": current_date.strftime("%d-%b-%Y"),
+                        "Date": current_date.strftime("%b %d, %Y"),
                         "Stock": target_stock,
                         "Action": "BUY",
                         "Qty": qty_to_buy,
@@ -427,8 +427,8 @@ try:
             cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
             cur_val = 0
             
-        # Format the date to DD-Mon-YYYY
-        formatted_date = pd.to_datetime(row["Buy_Date"]).strftime("%d-%b-%Y") if row["Buy_Date"] != "-" else "-"
+        # Format the date to MMM DD, YYYY
+        formatted_date = pd.to_datetime(row["Buy_Date"]).strftime("%b %d, %Y") if row["Buy_Date"] != "-" else "-"
         
         comparison_records.append({
             "Stock": stock,

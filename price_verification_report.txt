@@ -7,25 +7,3 @@ Stock CSV Files Loaded: 31
 1. INITIAL INVESTMENTS VERIFICATION
 ===========================================================================
 
-Results: 30/30 prices verified
-Status: ALL PRICES VERIFIED
-
-===========================================================================
-2. TRADING REPORT VERIFICATION
-===========================================================================
-
-Total trades to verify: 1624
-
-Results: 1624/1624 prices verified
-
-Total Transactions Checked: 1654
-  - Initial investments: 30
-  - Trading report: 1624
-
-Verified Against Stock Data:
-  - Prices found: 1654/1654 (100.0%)
-  - Issues found: 0
-
-[SUCCESS] All prices verified - They exist in the downloaded stock CSV files!
-
-===========================================================================
