@@ -16,14 +16,6 @@ TRAILING_STOP_PCT = 0.07  # 7% trailing stop (sells on 7% drop from peak)
 # Profit take is dynamic via trailing stop
 MAX_POSITION_PCT = 0.05    # Distribute across more stocks (max 20)
 
-# --- CORPORATE ACTIONS: MERGERS ---
-# some companies (e.g. banks) stopped trading under the old symbol
-# after a merger.  we keep a map of legacy symbols -> target symbols
-# along with the effective date and conversion ratio.  when the
-# simulation reaches the merge date we convert any outstanding
-# holdings and then stop trading the old symbol thereafter.
-# the dates below should be adjusted to the actual merger closing
-# dates for the securities in question.
 MERGERS = {
     "NBB": {"target": "NABIL", "date": pd.Timestamp("2022-07-11"), "ratio": 0.43},  # 100 NBB = 43 NABIL
     "MEGA": {"target": "NIBL", "date": pd.Timestamp("2023-01-11"), "ratio": 10/9},  # 90 MEGA = 100 NIBL (1.1111...)
@@ -152,6 +144,7 @@ try:
 except FileNotFoundError:
     cash = 0.0
 
+initial_starting_cash = cash
 initial_total_value = initial_invested + cash
 target_value = initial_total_value * 2
 
@@ -410,22 +403,43 @@ print("="*30)
 # 2. Generate Portfolio Comparison Report
 try:
     initial_comp_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
+    
+    # Calculate Buy and Hold state (Initial Quantity adjusted for Mergers Only)
+    hold_portfolio = {row["Stock"]: row["Quantity"] for _, row in initial_comp_df.iterrows()}
+    # Apply all historical mergers to the initial portfolio (Buy and Hold)
+    for legacy, info in MERGERS.items():
+        if legacy in hold_portfolio:
+            qty = hold_portfolio.pop(legacy)
+            new_qty = qty * info.get("ratio", 1.0)
+            target = info["target"]
+            hold_portfolio[target] = hold_portfolio.get(target, 0) + new_qty
+    
     comparison_records = []
     
     for _, row in initial_comp_df.iterrows():
         stock = row["Stock"]
+        
+        # Last available price in simulation
+        if stock in market_data:
+            cur_price = market_data[stock].iloc[-1]["close"]
+        else:
+            # Check if it was in portfolio at some point
+            if stock in portfolio:
+                cur_price = portfolio[stock]["Entry_Price"]
+            else:
+                cur_price = 0.0
+                
+        # Current Trading State
         if stock in portfolio:
             cur_qty = portfolio[stock]["Qty"]
-            # Last available price in simulation
-            if stock in market_data:
-                cur_price = market_data[stock].iloc[-1]["close"]
-            else:
-                cur_price = portfolio[stock]["Entry_Price"]
             cur_val = cur_qty * cur_price
         else:
             cur_qty = 0
-            cur_price = market_data[stock].iloc[-1]["close"] if stock in market_data else 0
             cur_val = 0
+            
+        # Buy and Hold State
+        hold_qty = hold_portfolio.get(stock, 0)
+        hold_val = hold_qty * cur_price
             
         # Format the date to MMM DD, YYYY
         formatted_date = pd.to_datetime(row["Buy_Date"]).strftime("%b %d, %Y") if row["Buy_Date"] != "-" else "-"
@@ -436,23 +450,33 @@ try:
             "Initial_Qty": row["Quantity"],
             "Initial_Price": row["Buy_Price"],
             "Initial_Value": row["Invested_Amount"],
-            "Jan 22 2026 Qty": cur_qty,
-            "Jan 22 2026 Price": round(cur_price, 2),
-            "Jan 22 2026 Value": round(cur_val, 2)
+            "Jan 21 2026 Qty": cur_qty,
+            "Jan 21 2026 Price": round(cur_price, 2),
+            "Jan 21 2026 Value": round(cur_val, 2),
+            "Investment Quantity(22 jan 2016-21 jan 2026)": round(hold_qty, 2),
+            "Investment Price (21 jan 2026)": round(cur_price, 2),
+            "Investment Value (21 jan 2026)": round(hold_val, 2)
         })
     
+    # Add any stocks currently in portfolio or hold portfolio but not in the initial investment (like NIBL from mergers)
+    all_record_stocks = {record["Stock"] for record in comparison_records}
+    all_potential_stocks = set(portfolio.keys()) | set(hold_portfolio.keys())
     
-    # Add any stocks currently in portfolio but not in the initial investment (like NIBL from mergers)
-    added_stocks = {record["Stock"] for record in comparison_records}
-    for stock, data in portfolio.items():
-        if stock not in added_stocks:
-            cur_qty = data["Qty"]
+    for stock in all_potential_stocks:
+        if stock not in all_record_stocks:
             # Last available price in simulation
             if stock in market_data:
                 cur_price = market_data[stock].iloc[-1]["close"]
+            elif stock in portfolio:
+                cur_price = portfolio[stock]["Entry_Price"]
             else:
-                cur_price = data["Entry_Price"]
+                cur_price = 0.0
+                
+            cur_qty = portfolio.get(stock, {}).get("Qty", 0)
             cur_val = cur_qty * cur_price
+            
+            hold_qty = hold_portfolio.get(stock, 0)
+            hold_val = hold_qty * cur_price
             
             comparison_records.append({
                 "Stock": stock,
@@ -460,9 +484,12 @@ try:
                 "Initial_Qty": 0,
                 "Initial_Price": 0.0,
                 "Initial_Value": 0.0,
-                "Jan 22 2026 Qty": cur_qty,
-                "Jan 22 2026 Price": round(cur_price, 2),
-                "Jan 22 2026 Value": round(cur_val, 2)
+                "Jan 21 2026 Qty": cur_qty,
+                "Jan 21 2026 Price": round(cur_price, 2),
+                "Jan 21 2026 Value": round(cur_val, 2),
+                "Investment Quantity(22 jan 2016-21 jan 2026)": round(hold_qty, 2),
+                "Investment Price (21 jan 2026)": round(cur_price, 2),
+                "Investment Value (21 jan 2026)": round(hold_val, 2)
             })
 
     # Also add remaining Cash
@@ -472,9 +499,12 @@ try:
         "Initial_Qty": 0,
         "Initial_Price": 0.0,
         "Initial_Value": 0.0,
-        "Jan 22 2026 Qty": 0,
-        "Jan 22 2026 Price": 0.0,
-        "Jan 22 2026 Value": round(cash, 2)
+        "Jan 21 2026 Qty": 0,
+        "Jan 21 2026 Price": 0.0,
+        "Jan 21 2026 Value": round(cash, 2),
+        "Investment Quantity(22 jan 2016-21 jan 2026)": 0.0,
+        "Investment Price (21 jan 2026)": 0.0,
+        "Investment Value (21 jan 2026)": round(initial_starting_cash, 2)
     })
     
     comp_df = pd.DataFrame(comparison_records)
@@ -486,15 +516,20 @@ try:
         "Initial_Qty": comp_df["Initial_Qty"].sum(),
         "Initial_Price": round(comp_df["Initial_Price"].sum(), 2),
         "Initial_Value": round(comp_df["Initial_Value"].sum(), 2),
-        "Jan 22 2026 Qty": comp_df["Jan 22 2026 Qty"].sum(),
-        "Jan 22 2026 Price": round(comp_df["Jan 22 2026 Price"].sum(), 2),
-        "Jan 22 2026 Value": round(comp_df["Jan 22 2026 Value"].sum(), 2)
+        "Jan 21 2026 Qty": comp_df["Jan 21 2026 Qty"].sum(),
+        "Jan 21 2026 Price": round(comp_df["Jan 21 2026 Price"].sum(), 2),
+        "Jan 21 2026 Value": round(comp_df["Jan 21 2026 Value"].sum(), 2),
+        "Investment Quantity(22 jan 2016-21 jan 2026)": round(comp_df["Investment Quantity(22 jan 2016-21 jan 2026)"].sum(), 2),
+        "Investment Price (21 jan 2026)": round(comp_df["Investment Price (21 jan 2026)"].sum(), 2),
+        "Investment Value (21 jan 2026)": round(comp_df["Investment Value (21 jan 2026)"].sum(), 2)
     }
+
     comp_df = pd.concat([comp_df, pd.DataFrame([totals])], ignore_index=True)
     
     comparison_file = "portfolio_comparison.csv"
     comp_df.to_csv(comparison_file, index=False)
     print(f"Comparison report written: {comparison_file}")
+
 except Exception as e:
     print(f"Failed to generate comparison report: {e}")
 
@@ -513,6 +548,10 @@ with open(summary_file, "w") as f:
 # 4. Write Trade History CSV
 report_file = "trading_report.csv"
 if transactions:
+    # Update first row Cash_In_Hand with calculation logic
+    first = transactions[0]
+    first["Cash_In_Hand"] = f"({initial_starting_cash} + {round(first['Total_Amount'], 2)} = {round(first['Cash_In_Hand'], 2)})"
+    
     df_trades = pd.DataFrame(transactions)
     cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "TMS_Khata_Value", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
     df_trades = df_trades[cols]

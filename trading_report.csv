@@ -1,5 +1,5 @@
 Date,Stock,Action,Qty,Price,Total_Amount,Cash_In_Hand,TMS_Khata_Value,Profit_Loss,Gain_Loss_Pct,Portfolio_Value,Reason
-"Jan 24, 2016",ADBL,SELL,45.0,599.0,26955.0,30242.0,564247.0,22410.0,493.07%,594489.0,Take Profit (100% up) - exactly 493.07% up
+"Jan 24, 2016",ADBL,SELL,45.0,599.0,26955.0,(3287.0 + 26955.0 = 30242.0),564247.0,22410.0,493.07%,594489.0,Take Profit (100% up) - exactly 493.07% up
 "Jan 24, 2016",AHPC,SELL,27.0,349.0,9423.0,39665.0,554824.0,2592.0,37.94%,594489.0,Take Profit (25% up) - exactly 37.94% up
 "Jan 24, 2016",ALICL,SELL,35.0,1299.0,45465.0,85130.0,509359.0,40285.0,777.70%,594489.0,Take Profit (100% up) - exactly 777.70% up
 "Jan 24, 2016",CIT,SELL,21.0,4390.0,92190.0,177320.0,417169.0,81921.0,797.75%,594489.0,Take Profit (100% up) - exactly 797.75% up

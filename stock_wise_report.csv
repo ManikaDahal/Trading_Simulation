@@ -1,5 +1,5 @@
 Date,Stock,Action,Qty,Price,Total_Amount,Cash_In_Hand,TMS_Khata_Value,Profit_Loss,Gain_Loss_Pct,Portfolio_Value,Reason
-"Jan 24, 2016",ADBL,SELL,45.0,599.0,26955.0,30242.0,564247.0,22410.0,493.07%,594489.0,Take Profit (100% up) - exactly 493.07% up
+"Jan 24, 2016",ADBL,SELL,45.0,599.0,26955.0,(3287.0 + 26955.0 = 30242.0),564247.0,22410.0,493.07%,594489.0,Take Profit (100% up) - exactly 493.07% up
 "Feb 04, 2016",ADBL,BUY,51.0,589.0,-30039.0,242957.0,363651.0,0.0,0.00%,606608.0,Trend Entry (Str: 0.07)
 "Mar 21, 2016",ADBL,SELL,51.0,648.0,33048.0,43802.0,612402.0,3009.0,10.02%,656204.0,Trailing Stop (7% drop) - exactly 8.35% drop
 "Mar 27, 2016",ADBL,BUY,49.0,673.0,-32977.0,73395.0,599071.0,0.0,0.00%,672466.0,Trend Entry (Str: 0.08)
