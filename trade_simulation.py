@@ -264,12 +264,8 @@ for current_date in dates:
         reason = ""
         if gain_pct >= 100:
             reason = f"Take Profit (100% up) - exactly {gain_pct:.2f}% up"
-        elif gain_pct >= 25:
-            if gain_pct == 25:
-                reason = "Take Profit (25% up)"
-            else:
-                reason = f"Take Profit (25% up) - exactly {gain_pct:.2f}% up"
         elif current_price < stop_price:
+
             drop_pct = (1 - current_price / max_price) * 100
             reason = f"Trailing Stop (7% drop) - exactly {drop_pct:.2f}% drop"
             
