@@ -1,9 +1,11 @@
 import pandas as pd
 import os
+import glob
 import numpy as np
 
 # CONFIGURATION
 DATA_DIR = "stocks"
+BONUS_DATA_DIR = "bonus_data"
 START_DATE = pd.to_datetime("2016-01-22")
 END_DATE = pd.to_datetime("2026-01-21")
 
@@ -13,7 +15,6 @@ INITIAL_INVESTMENT_FILE = "initial_investment.csv"
 # Strategy Parameters
 MIN_SHARES = 15
 TRAILING_STOP_PCT = 0.07  # 7% trailing stop (sells on 7% drop from peak)
-# Profit take is dynamic via trailing stop
 MAX_POSITION_PCT = 0.05    # Distribute across more stocks (max 20)
 
 MERGERS = {
@@ -21,20 +22,26 @@ MERGERS = {
     "MEGA": {"target": "NIBL", "date": pd.Timestamp("2023-01-11"), "ratio": 10/9},  # 90 MEGA = 100 NIBL (1.1111...)
 }
 
+# LOAD BONUS DATA
+print("Loading bonus data...")
+all_bonuses = {}
+if os.path.exists(BONUS_DATA_DIR):
+    bonus_files = glob.glob(os.path.join(BONUS_DATA_DIR, "*.csv"))
+    for file_path in bonus_files:
+        # Extract stock name from file like 'ahpc_bonus.csv'
+        stock_name = os.path.basename(file_path).split('_')[0].upper()
+        try:
+            df_bonus = pd.read_csv(file_path)
+            if 'Date' in df_bonus.columns and 'Bonus Dividend(%)' in df_bonus.columns:
+                df_bonus['Date'] = pd.to_datetime(df_bonus['Date'])
+                # Store as list of (date, percentage)
+                all_bonuses[stock_name] = sorted(list(zip(df_bonus['Date'], df_bonus['Bonus Dividend(%)'])), key=lambda x: x[0])
+        except Exception as e:
+            print(f"  Warning: Could not load bonus data for {stock_name}: {e}")
+
 
 def apply_mergers(current_date, today_prices):
-    """Convert legacy holdings to the new symbol after the merge date.
-
-    - portfolio entries for the old symbol are removed and replaced with
-      an equivalent position in the target symbol (quantity adjusted by
-      ``ratio``).
-    - ``Buy_Date`` is set to the merge date and ``Entry_Price`` is
-      taken from the target's closing price on that day when available.
-    - The old symbol is removed from ``all_stocks`` so it is no longer
-      considered for new trades, and the target symbol is added if it's
-      present in ``market_data``.  A warning is printed if the target
-      data is missing (you should add a CSV for the merged share).
-    """
+    """Convert legacy holdings to the new symbol after the merge date."""
     global portfolio, all_stocks, cash, transactions
     
     for legacy, info in MERGERS.items():
@@ -110,6 +117,30 @@ def apply_mergers(current_date, today_prices):
                 else:
                     print(f"Warning: merge target {info['target']} not loaded; add its CSV to continue trading after merge.")
 
+
+def apply_bonuses(current_date):
+    """Apply bonus shares to existing portfolio holdings based on current_date."""
+    global portfolio, transactions
+    
+    for stock, pos_data in portfolio.items():
+        if stock in all_bonuses:
+            for bonus_date, pct in all_bonuses[stock]:
+                if current_date == bonus_date and pct > 0:
+                    old_qty = pos_data["Qty"]
+                    bonus_qty = old_qty * (pct / 100)
+                    new_qty = old_qty + bonus_qty
+                    
+                    # Update price to keep total cost basis constant
+                    new_entry_price = (old_qty * pos_data["Entry_Price"]) / new_qty
+                    
+                    portfolio[stock]["Qty"] = new_qty
+                    portfolio[stock]["Entry_Price"] = new_entry_price
+                    # We also update Max_Price to reflect the adjustment
+                    portfolio[stock]["Max_Price"] = (old_qty * pos_data["Max_Price"]) / new_qty
+                    
+                    print(f"Applied {pct}% bonus for {stock} on {current_date}")
+
+
 # Moving Averages (Super Fast Trend)
 SMA_FAST = 10
 SMA_SLOW = 30
@@ -160,7 +191,7 @@ for file in os.listdir(DATA_DIR):
     if not file.endswith(".csv"):
         continue
     
-    stock_name = file.replace(".csv", "")
+    stock_name = file.replace(".csv", "").upper()
     file_path = os.path.join(DATA_DIR, file)
     
     try:
@@ -210,7 +241,7 @@ for current_date in dates:
                 "SMA_SLOW": df.loc[current_date]["SMA_SLOW"]
             }
     
-    # check for any corporate mergers and convert holdings / universe
+    # Apply Mergers (Bonuses are NOT applied to the trading portfolio anymore)
     apply_mergers(current_date, today_prices)
     
     if not today_prices:
@@ -396,45 +427,75 @@ print(f"Total Profit:        {total_profit:,.2f}")
 print(f"Return (%):          {profit_pct:.2f}%")
 print("="*30)
 
+# Build Compounded Hold Portfolio (Starting from START_DATE)
+hold_ptf_data = {}
+for _, row in initial_df.iterrows():
+    # Track each initial investment through time for mergers and bonuses
+    s_tracker = {"s": row["Stock"], "q": row["Quantity"]}
+    for d in pd.date_range(START_DATE, END_DATE, freq='D'):
+        curr_s = s_tracker["s"]
+        # 1. Apply Mergers
+        if curr_s in MERGERS and d == MERGERS[curr_s]["date"]:
+             s_tracker["q"] *= MERGERS[curr_s]["ratio"]
+             s_tracker["s"] = MERGERS[curr_s]["target"]
+             curr_s = s_tracker["s"]
+        # 2. Apply Bonuses
+        if curr_s in all_bonuses:
+            for bd, pct in all_bonuses[curr_s]:
+                if d == bd:
+                    s_tracker["q"] *= (1 + pct/100)
+    
+    # Store final state for this initial row
+    hold_ptf_data[row["Stock"]] = {
+        "final_symbol": s_tracker["s"],
+        "final_qty": s_tracker["q"]
+    }
+
 # 2. Generate Portfolio Comparison Report
 try:
-    initial_comp_df = pd.read_csv(INITIAL_INVESTMENT_FILE)
-    
-    # Calculate Buy and Hold state (Initial Quantity adjusted for Mergers Only)
-    hold_portfolio = {row["Stock"]: row["Quantity"] for _, row in initial_comp_df.iterrows()}
-    # Apply all historical mergers to the initial portfolio (Buy and Hold)
-    for legacy, info in MERGERS.items():
-        if legacy in hold_portfolio:
-            qty = hold_portfolio.pop(legacy)
-            new_qty = qty * info.get("ratio", 1.0)
-            target = info["target"]
-            hold_portfolio[target] = hold_portfolio.get(target, 0) + new_qty
-    
     comparison_records = []
     
-    for _, row in initial_comp_df.iterrows():
+    for _, row in initial_df.iterrows():
         stock = row["Stock"]
         
-        # Last available price in simulation
-        if stock in market_data:
-            cur_price = market_data[stock].iloc[-1]["close"]
-        else:
-            # Check if it was in portfolio at some point
-            if stock in portfolio:
-                cur_price = portfolio[stock]["Entry_Price"]
-            else:
-                cur_price = 0.0
-                
-        # Current Trading State
-        if stock in portfolio:
-            cur_qty = portfolio[stock]["Qty"]
-            cur_val = cur_qty * cur_price
-        else:
-            cur_qty = 0
-            cur_val = 0
+        # We track two parallel scenarios for each initial holding:
+        # Scenario 1: Mergers ONLY (The original "Investment" part)
+        inv_tracker = {"s": row["Stock"], "q": row["Quantity"]}
+        # Scenario 2: Mergers + Bonuses (The "Compounded" part)
+        comp_tracker = {"s": row["Stock"], "q": row["Quantity"]}
+        
+        for d in pd.date_range(START_DATE, END_DATE, freq='D'):
+            # Apply Mergers to BOTH
+            for tracker in [inv_tracker, comp_tracker]:
+                curr_s = tracker["s"]
+                if curr_s in MERGERS and d == MERGERS[curr_s]["date"]:
+                     tracker["q"] *= MERGERS[curr_s]["ratio"]
+                     tracker["s"] = MERGERS[curr_s]["target"]
             
-        # Buy and Hold State
-        hold_qty = hold_portfolio.get(stock, 0)
+            # Apply Bonuses ONLY to Compounded tracker
+            curr_comp_s = comp_tracker["s"]
+            if curr_comp_s in all_bonuses:
+                for bd, pct in all_bonuses[curr_comp_s]:
+                    if d == bd:
+                        comp_tracker["q"] *= (1 + pct/100)
+        
+        # Last available price in simulation (using final symbol from comp_tracker)
+        final_sym = comp_tracker["s"]
+        if final_sym in market_data:
+            cur_price = market_data[final_sym].iloc[-1]["close"]
+        else:
+            cur_price = 0.0
+                
+        # Current Trading State results (SMA Strategy)
+        tr_qty = portfolio[stock]["Qty"] if stock in portfolio else 0
+        tr_val = tr_qty * cur_price
+            
+        # Scenario 1: Investment (Mergers Only)
+        inv_qty = inv_tracker["q"]
+        inv_val = inv_qty * cur_price
+
+        # Scenario 2: Compounded (Mergers + Bonuses)
+        hold_qty = np.floor(comp_tracker["q"])
         hold_val = hold_qty * cur_price
             
         # Format the date to MMM DD, YYYY
@@ -446,49 +507,47 @@ try:
             "Initial_Qty": row["Quantity"],
             "Initial_Price": row["Buy_Price"],
             "Initial_Value": row["Invested_Amount"],
-            "Jan 21 2026 Qty": cur_qty,
+            "Jan 21 2026 Qty": tr_qty,
             "Jan 21 2026 Price": round(cur_price, 2),
-            "Jan 21 2026 Value": round(cur_val, 2),
-            "Investment Quantity(22 jan 2016-21 jan 2026)": round(hold_qty, 2),
+            "Jan 21 2026 Value": round(tr_val, 2),
+            "Investment Quantity(22 jan 2016-21 jan 2026)": round(inv_qty, 2),
             "Investment Price (21 jan 2026)": round(cur_price, 2),
-            "Investment Value (21 jan 2026)": round(hold_val, 2)
+            "Investment Value (21 jan 2026)": round(inv_val, 2),
+            "Compounded Quantity": hold_qty,
+            "Compounded Price (21 jan 2026)": round(cur_price, 2),
+            "Compounded Value (21 Jan 2026)": round(hold_val, 2)
         })
     
-    # Add any stocks currently in portfolio or hold portfolio but not in the initial investment (like NIBL from mergers)
+    # Add any stocks currently in trading portfolio but NOT in initial list (e.g. merger targets)
     all_record_stocks = {record["Stock"] for record in comparison_records}
-    all_potential_stocks = set(portfolio.keys()) | set(hold_portfolio.keys())
-    
-    for stock in all_potential_stocks:
-        if stock not in all_record_stocks:
-            # Last available price in simulation
-            if stock in market_data:
-                cur_price = market_data[stock].iloc[-1]["close"]
-            elif stock in portfolio:
-                cur_price = portfolio[stock]["Entry_Price"]
+    for tr_stock in portfolio:
+        if tr_stock not in all_record_stocks:
+            if tr_stock in market_data:
+                p = market_data[tr_stock].iloc[-1]["close"]
             else:
-                cur_price = 0.0
-                
-            cur_qty = portfolio.get(stock, {}).get("Qty", 0)
-            cur_val = cur_qty * cur_price
+                p = portfolio[tr_stock]["Entry_Price"]
             
-            hold_qty = hold_portfolio.get(stock, 0)
-            hold_val = hold_qty * cur_price
+            qty = portfolio[tr_stock]["Qty"]
+            val = qty * p
             
             comparison_records.append({
-                "Stock": stock,
+                "Stock": tr_stock,
                 "Initial_Buy_Date": "-",
                 "Initial_Qty": 0,
                 "Initial_Price": 0.0,
                 "Initial_Value": 0.0,
-                "Jan 21 2026 Qty": cur_qty,
-                "Jan 21 2026 Price": round(cur_price, 2),
-                "Jan 21 2026 Value": round(cur_val, 2),
-                "Investment Quantity(22 jan 2016-21 jan 2026)": round(hold_qty, 2),
-                "Investment Price (21 jan 2026)": round(cur_price, 2),
-                "Investment Value (21 jan 2026)": round(hold_val, 2)
+                "Jan 21 2026 Qty": qty,
+                "Jan 21 2026 Price": round(p, 2),
+                "Jan 21 2026 Value": round(val, 2),
+                "Investment Quantity(22 jan 2016-21 jan 2026)": 0.0,
+                "Investment Price (21 jan 2026)": round(p, 2),
+                "Investment Value (21 jan 2026)": 0.0,
+                "Compounded Quantity": 0,
+                "Compounded Price (21 jan 2026)": round(p, 2),
+                "Compounded Value (21 Jan 2026)": 0.0
             })
 
-    # Also add remaining Cash
+    # Add remaining Cash
     comparison_records.append({
         "Stock": "CASH",
         "Initial_Buy_Date": "-",
@@ -500,7 +559,10 @@ try:
         "Jan 21 2026 Value": round(cash, 2),
         "Investment Quantity(22 jan 2016-21 jan 2026)": 0.0,
         "Investment Price (21 jan 2026)": 0.0,
-        "Investment Value (21 jan 2026)": round(initial_starting_cash, 2)
+        "Investment Value (21 jan 2026)": round(initial_starting_cash, 2),
+        "Compounded Quantity": 0.0,
+        "Compounded Price (21 jan 2026)": 0.0,
+        "Compounded Value (21 Jan 2026)": round(initial_starting_cash, 2)
     })
     
     comp_df = pd.DataFrame(comparison_records)
@@ -517,7 +579,10 @@ try:
         "Jan 21 2026 Value": round(comp_df["Jan 21 2026 Value"].sum(), 2),
         "Investment Quantity(22 jan 2016-21 jan 2026)": round(comp_df["Investment Quantity(22 jan 2016-21 jan 2026)"].sum(), 2),
         "Investment Price (21 jan 2026)": round(comp_df["Investment Price (21 jan 2026)"].sum(), 2),
-        "Investment Value (21 jan 2026)": round(comp_df["Investment Value (21 jan 2026)"].sum(), 2)
+        "Investment Value (21 jan 2026)": round(comp_df["Investment Value (21 jan 2026)"].sum(), 2),
+        "Compounded Quantity": comp_df["Compounded Quantity"].sum(),
+        "Compounded Price (21 jan 2026)": round(comp_df["Compounded Price (21 jan 2026)"].sum(), 2),
+        "Compounded Value (21 Jan 2026)": round(comp_df["Compounded Value (21 Jan 2026)"].sum(), 2)
     }
 
     comp_df = pd.concat([comp_df, pd.DataFrame([totals])], ignore_index=True)
@@ -527,7 +592,9 @@ try:
     print(f"Comparison report written: {comparison_file}")
 
 except Exception as e:
+    import traceback
     print(f"Failed to generate comparison report: {e}")
+    traceback.print_exc()
 
 # 3. Write Summary to TXT
 summary_file = "trading_summary.txt"
@@ -544,11 +611,10 @@ with open(summary_file, "w") as f:
 # 4. Write Trade History CSV
 report_file = "trading_report.csv"
 if transactions:
-    # Update first row Cash_In_Hand with calculation logic
-    first = transactions[0]
-    first["Cash_In_Hand"] = f"({initial_starting_cash} + {round(first['Total_Amount'], 2)} = {round(first['Cash_In_Hand'], 2)})"
-    
-    df_trades = pd.DataFrame(transactions)
+    first_tr = transactions[0].copy()
+    first_tr["Cash_In_Hand"] = f"({initial_starting_cash} + {round(first_tr['Total_Amount'], 2)} = {round(first_tr['Cash_In_Hand'], 2)})"
+    output_transactions = [first_tr] + transactions[1:]
+    df_trades = pd.DataFrame(output_transactions)
     cols = ["Date", "Stock", "Action", "Qty", "Price", "Total_Amount", "Cash_In_Hand", "TMS_Khata_Value", "Profit_Loss", "Gain_Loss_Pct", "Portfolio_Value", "Reason"]
     df_trades = df_trades[cols]
     df_trades.to_csv(report_file, index=False)
