@@ -454,6 +454,8 @@ for _, row in initial_df.iterrows():
 # 2. Generate Portfolio Comparison Report
 try:
     comparison_records = []
+    bonus_records = []
+
     
     for _, row in initial_df.iterrows():
         stock = row["Stock"]
@@ -477,7 +479,20 @@ try:
             if curr_comp_s in all_bonuses:
                 for bd, pct in all_bonuses[curr_comp_s]:
                     if d == bd:
+                        pre_qty = comp_tracker["q"]
+                        bonus_qty = pre_qty * (pct / 100)
                         comp_tracker["q"] *= (1 + pct/100)
+                        
+                        bonus_records.append({
+                            "Stock": row["Stock"], # Use initial stock name for grouping consistency
+                            "Bonus Symbol": curr_comp_s, # The actual symbol at time of bonus
+                            "Actual Quantity": round(pre_qty, 2),
+                            "Bonus Date": d.strftime("%b %d, %Y"),
+                            "Bonus Percentage": f"{pct}%",
+                            "Bonus Quantity": round(bonus_qty, 2),
+                            "Compounded Quantity": round(comp_tracker["q"], 2)
+                        })
+
         
         # Last available price in simulation (using final symbol from comp_tracker)
         final_sym = comp_tracker["s"]
@@ -590,6 +605,17 @@ try:
     comparison_file = "portfolio_comparison.csv"
     comp_df.to_csv(comparison_file, index=False)
     print(f"Comparison report written: {comparison_file}")
+
+    # Generate Bonus History Report
+    if bonus_records:
+        bonus_history_file = "bonus_compounding_history.csv"
+        bonus_df = pd.DataFrame(bonus_records)
+        # Sort by Stock and then by Date (we need to convert Date back to datetime for proper sorting)
+        bonus_df['Date_obj'] = pd.to_datetime(bonus_df['Bonus Date'])
+        bonus_df = bonus_df.sort_values(['Stock', 'Date_obj']).drop(columns=['Date_obj'])
+        bonus_df.to_csv(bonus_history_file, index=False)
+        print(f"Bonus compounding history written: {bonus_history_file}")
+
 
 except Exception as e:
     import traceback
